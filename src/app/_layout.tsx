@@ -1,3 +1,4 @@
+import "../global.css"
 import { Slot } from 'expo-router';
 import { AuthProvider } from '../store/auth-context';
 import { SelectedEventProvider } from '../store/selected-event-context';
