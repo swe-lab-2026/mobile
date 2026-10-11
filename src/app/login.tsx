@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { View, TextInput, Text, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
 import { router } from 'expo-router';
 import { useAuth } from '../store/auth-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function LoginScreen() {
   const { login } = useAuth();
@@ -24,11 +25,12 @@ export default function LoginScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      <Text style ={styles.title}>Sign In</Text>
+    <SafeAreaView style= {{flex:1, backgroundColor: 'white'}}>
+    <View className='flex-1 justify-center p-6 gap-3 bg-white'>
+      <Text className='text-3xl font-semibold text-center'>Sign In</Text>
 
       <TextInput
-        style={styles.input}
+        className='border border-gray-300 rounded-lg p-3 text-base'
         placeholder="Email"
         autoCapitalize="none"
         keyboardType="email-address"
@@ -36,27 +38,22 @@ export default function LoginScreen() {
         onChangeText={setEmail}
       />
       <TextInput
-        style={styles.input}
+        className='border border-gray-300 rounded-lg p-3 text-base'
         placeholder="Password"
         secureTextEntry
         value={password}
         onChangeText={setPassword}
       />
 
-      {error && <Text style={styles.error}>{error}</Text>}
+      {error && <Text className="text-red-600 text-center">{error}</Text>}
 
-      <Pressable style={styles.button} onPress={handleSubmit} disabled={submitting}>
-        {submitting ? <ActivityIndicator color="white" /> : <Text style={styles.buttonText}>Log In</Text>}
+      <Pressable 
+      className={`rounded-lg p-3.5 items-center mt-2 ${submitting ? 'bg-gray-400' : 'bg-black'}`}
+      onPress={handleSubmit} 
+      disabled={submitting}>
+        {submitting ? <ActivityIndicator color="#fff" /> : <Text className='text-white font-semibold text-lg'>Log In</Text>}
       </Pressable>
     </View>
+    </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 25, gap: 10, },
-  title: { fontSize: 24, fontWeight: '600', marginBottom: 16, textAlign: 'center' },
-  input: { borderWidth: 2, borderColor: 'gray', borderRadius: 10, padding: 10, fontSize: 16 },
-  error: { color: 'red', textAlign: 'center' },
-  button: { backgroundColor: 'black', borderRadius: 10, padding: 14, alignItems: 'center', marginTop: 8 },
-  buttonText: { color: 'white', fontSize: 16, fontWeight: 600,},
-});
