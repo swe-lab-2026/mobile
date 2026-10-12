@@ -223,6 +223,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  torchText: {
+    color: '#333',
+    fontSize: 15,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
   torchButton: {
     backgroundColor: 'rgba(0,0,0,0.6)',
     paddingHorizontal: 14,
