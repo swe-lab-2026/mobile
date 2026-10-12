@@ -1,13 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
-import { View, Text, FlatList, Pressable, ActivityIndicator, StyleSheet, RefreshControl } from 'react-native';
 import { router } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getAssignedEvents } from '../../api/events';
-import { AssignedEvent } from '../../types/event';
 import { useAuth } from '../../store/auth-context';
 import { useSelectedEvent } from '../../store/selected-event-context';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function EventsListScreen() {
+  const insets = useSafeAreaInsets();
   const { logout } = useAuth();
   const { selectEvent } = useSelectedEvent();
   const [events, setEvents] = useState<AssignedEvent[]>([]);
