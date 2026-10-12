@@ -5,6 +5,7 @@ import { getAssignedEvents } from '../../api/events';
 import { AssignedEvent } from '../../types/event';
 import { useAuth } from '../../store/auth-context';
 import { useSelectedEvent } from '../../store/selected-event-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function EventsListScreen() {
   const { logout } = useAuth();
@@ -35,18 +36,19 @@ export default function EventsListScreen() {
 
   if (loading) {
     return (
-      <View style={styles.center}>
+      <View className='flex-1 items-center justify-center bg-white'>
         <ActivityIndicator />
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Your Events</Text>
-        <Pressable onPress={logout}>
-          <Text style={styles.logout}>Log out</Text>
+    <SafeAreaView style= {{flex:1, backgroundColor: 'white'}}>
+    <View className='flex-1 bg-white p-4'>
+      <View className='mb-4 flex-row items-center justify-between'>
+        <Text className='text-xl font-semibold'>Your Events</Text>
+        <Pressable onPress={logout} className="active:opacity-60">
+          <Text className='text-sm text-red-600'>Log out</Text>
         </Pressable>
       </View>
 
@@ -54,26 +56,23 @@ export default function EventsListScreen() {
         data={events}
         keyExtractor={(item) => item.id}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        ListEmptyComponent={<Text style={styles.empty}>No events assigned yet.</Text>}
+        ListEmptyComponent={
+          <Text className='mt-10 text-center text-gray-500'>No events assigned yet.</Text>
+        }
         renderItem={({ item }) => (
-          <Pressable style={styles.row} onPress={() => openEvent(item.id)}>
-            <Text style={styles.rowTitle}>{item.name}</Text>
-            {item.location && <Text style={styles.rowSubtitle}>{item.location}</Text>}
+          <Pressable
+            className='border-b border-gray-200 py-3.5 active:bg-gray-50'
+            onPress={() => openEvent(item.id)}
+          >
+            <Text className='text-1xl font-medium'>{item.name}</Text>
+            {item.location && (
+              <Text className='mt-0.5 text-sm text-gray-500'>{item.location}</Text>
+            )}
           </Pressable>
         )}
       />
     </View>
+    </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  title: { fontSize: 20, fontWeight: '600' },
-  logout: { color: '#d33', fontSize: 14 },
-  row: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  rowTitle: { fontSize: 16, fontWeight: '500' },
-  rowSubtitle: { fontSize: 13, color: '#666', marginTop: 2 },
-  empty: { textAlign: 'center', marginTop: 40, color: '#666' },
-});
