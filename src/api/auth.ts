@@ -1,18 +1,17 @@
-import { LoginCredentials, LoginResponse } from '../types/auth';
+import { apiRequest } from "./client";
+import { LoginCredentials, TokenResponse } from "../types/auth";
 
-// TEMP: fake data for testing
-export function login(credentials: LoginCredentials): Promise<LoginResponse> {
-  return Promise.resolve({
-    token: 'fake',
-    user: {
-      id: '1',
-      name: 'Test admin',
-      email: credentials.email,
-      role: 'event_admin',
-    },
+export const login = (c: LoginCredentials) => 
+  apiRequest<TokenResponse> ('/auth/login', { 
+    method: 'POST', body: JSON.stringify(c), skipAuth: true
   });
-}
 
-export function logout(): Promise<void> {
-  return Promise.resolve();
-}
+export const refresh = (refreshToken: string) => 
+  apiRequest<TokenResponse> ('/auth/refresh', {
+    method: 'POST', body: JSON.stringify({refresh_token: refreshToken}), skipAuth: true
+  });
+
+export const logout = (refreshToken: string) => 
+  apiRequest<void> ('/auth/logout', {
+    method: 'POST', body: JSON.stringify({refresh_token: refreshToken}), skipAuth: true
+  }).catch(() => undefined);

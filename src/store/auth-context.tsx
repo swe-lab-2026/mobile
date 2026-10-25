@@ -1,11 +1,13 @@
-import React, { createContext, useContext, useMemo, useState, useCallback, } from 'react';
-import { AuthUser } from '../types/auth';
+import React, { createContext, useContext, useMemo, useState, useCallback, useRef, useEffect} from 'react';
+import * as SecureStore from 'expo-secure-store';
 import * as authApi from '../api/auth';
+import { ApiError, setAccessToken, setSessionHandlers } from '../api/client';
+
+const REFRESH_KEY = 'refresh_token';
 
 interface AuthContextValue {
-  user: AuthUser | null;
+  isLoading: boolean;
   isAuthenticated: boolean;
-  isEventAdmin: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -13,40 +15,63 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const [isAuthenticated, setAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const inFlight = useRef<Promise<string | null> | null>(null);
 
-  // Login
+  const clearSession = useCallback(async () => {
+    setAccessToken(null);
+    setAuthenticated(false);
+    await SecureStore.deleteItemAsync(REFRESH_KEY);
+  }, []);
+
+  const saveTokens = useCallback(async (t: { access_token: string; refresh_token: string }) => {
+    await SecureStore.setItemAsync(REFRESH_KEY, t.refresh_token); // save BEFORE using it again
+    setAccessToken(t.access_token);
+    setAuthenticated(true);
+  }, []);
+
+  // One refresh at a time: a second call reuses the first one's promise.
+  const refreshSession = useCallback((): Promise<string | null> => {
+    if (inFlight.current) return inFlight.current;
+    inFlight.current = (async () => {
+      const stored = await SecureStore.getItemAsync(REFRESH_KEY);
+      if (!stored) return null;
+      try {
+        const tokens = await authApi.refresh(stored);
+        await saveTokens(tokens);
+        return tokens.access_token;
+      } catch (e) {
+        if (e instanceof ApiError) await clearSession(); // server rejected it
+        return null;                                      // network error: keep it
+      } finally {
+        inFlight.current = null;
+      }
+    })();
+    return inFlight.current;
+  }, [saveTokens, clearSession]);
+
+  useEffect(() => {
+    setSessionHandlers({ refresh: refreshSession, onExpired: () => { clearSession(); } });
+    refreshSession().finally(() => setIsLoading(false)); // restore session on app start
+    return () => setSessionHandlers(null);
+  }, [refreshSession, clearSession]);
+
   const login = useCallback(async (email: string, password: string) => {
-    const { user: loggedInUser } = await authApi.login({
-      email,
-      password,
-    });
+    await saveTokens(await authApi.login({ email, password }));
+  }, [saveTokens]);
 
-    setUser(loggedInUser);
-  }, []);
-
-  // Logout
   const logout = useCallback(async () => {
-    await authApi.logout();
-    setUser(null);
-  }, []);
+    const stored = await SecureStore.getItemAsync(REFRESH_KEY);
+    if (stored) await authApi.logout(stored);
+    await clearSession();
+  }, [clearSession]);
 
   const value = useMemo(
-    () => ({
-      user,
-      isAuthenticated: !!user,
-      isEventAdmin: user?.role === 'event_admin',
-      login,
-      logout,
-    }),
-    [user, login, logout]
+    () => ({ isLoading, isAuthenticated, login, logout }),
+    [isLoading, isAuthenticated, login, logout],
   );
-
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

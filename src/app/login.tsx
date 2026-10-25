@@ -3,6 +3,7 @@ import { View, TextInput, Text, Pressable, ActivityIndicator, StyleSheet } from 
 import { router } from 'expo-router';
 import { useAuth } from '../store/auth-context';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { ApiError } from '../api/client';
 
 export default function LoginScreen() {
   const { login } = useAuth();
@@ -10,6 +11,12 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const MESSAGES: Record<string, string> = {
+  INVALID_CREDENTIALS: 'Invalid email or password.',
+  EMAIL_NOT_VERIFIED: 'Please verify your email first (on the web app).',
+  USER_BLOCKED: 'This account is blocked.',
+  TOO_MANY_ATTEMPTS: 'Too many failed attempts. Try again in a few minutes.',
+};
 
   async function handleSubmit() {
     setError(null);
@@ -18,7 +25,7 @@ export default function LoginScreen() {
         await login(email.trim(), password);
         router.replace('/events');
     } catch (err) {
-        setError('Something went wrong. Please try again.');
+        setError((err instanceof ApiError && MESSAGES[err.code ?? '']) || 'Something went wrong. Please try again.');
     } finally {
         setSubmitting(false);
     }
