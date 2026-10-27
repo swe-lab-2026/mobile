@@ -1,25 +1,25 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    Modal,
-    Pressable,
-    RefreshControl,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Modal,
+  Pressable,
+  RefreshControl,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-    checkInParticipant,
-    getParticipants,
-    undoCheckInParticipant,
-} from '../../../api/events';
-import { Participant } from '../../../types/event';
+  checkInParticipant,
+  getParticipants,
+  undoCheckInParticipant,
+} from '../../../../api/events';
+import { Participant } from '../../../../types/event';
 
 type Filter = 'all' | 'checkedIn' | 'notCheckedIn';
 
@@ -30,12 +30,12 @@ const FILTERS: { key: Filter; label: string }[] = [
 ];
 
 function initials(name: string) {
-  return name
+  return ( name ?? '?')
     .split(' ')
     .filter(Boolean)
     .slice(0, 2)
     .map((p) => p[0].toUpperCase())
-    .join('');
+    .join('') || '?';
 }
 
 function formatCheckInTime(value?: string) {
@@ -86,7 +86,7 @@ export default function ParticipantsScreen() {
       if (filter === 'notCheckedIn' && p.checkedIn) return false;
       if (!q) return true;
       return (
-        p.name.toLowerCase().includes(q) ||
+        (p.name ?? '').toLowerCase().includes(q) ||
         (p.email ?? '').toLowerCase().includes(q)
       );
     });
@@ -140,11 +140,11 @@ export default function ParticipantsScreen() {
       <StatusBar barStyle="dark-content" />
 
       <Pressable
-        onPress={() => router.back()}
-        style={({ pressed }) => [styles.backPill, pressed && styles.pressed]}
-      >
-        <Text style={styles.backText}>‹ Back</Text>
-      </Pressable>
+          onPress={() => router.back()}
+          className="mb-5 self-start rounded-full bg-indigo-50 px-3.5 py-2 active:opacity-70"
+        >
+          <Text className="text-sm font-semibold text-indigo-600">‹ Back</Text>
+        </Pressable>
 
       <View style={styles.header}>
         <Text style={styles.subtitle}>
