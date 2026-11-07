@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getAssignedEvents } from '../../api/events';
+import { AssignedEvent } from '../../types/event';
 import { useAuth } from '../../store/auth-context';
 import { useSelectedEvent } from '../../store/selected-event-context';
 import { SafeAreaView } from 'react-native-safe-area-context';
