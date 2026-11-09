@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@expo/ui": "~58.0.23",
+    "@types/jest": "30.0.0",
     "expo": "^58.0.19",
     "expo-camera": "~58.0.12",
     "expo-clipboard": "~58.0.4",
@@ -21,6 +22,8 @@
     "expo-system-ui": "~58.0.6",
     "expo-web-browser": "~58.0.6",
     "ionicons": "^8.1.0",
+    "jest": "~30.5.2",
+    "jest-expo": "~58.0.14",
     "lucide-react-native": "^1.48.0",
     "nativewind": "^4.2.7",
     "react": "19.3.0",
@@ -36,16 +39,17 @@
     "tailwindcss": "^3.4.19"
   },
   "devDependencies": {
+    "@testing-library/react-native": "^14.1.0",
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "start": "expo start",
-    "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web",
-    "lint": "expo lint"
+    "test": "jest",
+    "test:integration": "EXPO_PUBLIC_API_BASE_URL=http://130.210.14.131/api/v1 jest --testMatch \"**/*.integration.test.ts\" --testPathIgnorePatterns /node_modules/ --runInBand"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "testPathIgnorePatterns": ["/node_modules/", "\\.integration\\.test\\."]
   },
   "private": true
 }

@@ -162,11 +162,11 @@ export default function EventDetailScreen() {
         </Pressable>
 
         <Pressable
-          className="items-center rounded-2xl bg-indigo-600 py-4 active:opacity-80"
-          onPress={() => router.push('/scanner')}
-        >
-          <Text className="text-base font-bold text-white">Open Scanner</Text>
-        </Pressable>
+  className="items-center rounded-2xl bg-indigo-600 py-4 active:opacity-80"
+  onPress={() => router.push({ pathname: '/scanner', params: { eventId: id } })}
+>
+  <Text className="text-base font-bold text-white">Open Scanner</Text>
+</Pressable>
       </View>
     </SafeAreaView>
   );
