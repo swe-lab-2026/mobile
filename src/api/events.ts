@@ -1,5 +1,11 @@
 import { apiRequest } from './client';
-import { AssignedEvent, CheckedInTicket, EventDetails, Participant } from '../types/event';
+import {
+  AssignedEvent,
+  AttendanceStats,
+  CheckedInTicket,
+  EventDetails,
+  EventTicket,
+} from '../types/event';
 
 interface AssignedEventDto {
   event_id: string;
@@ -13,7 +19,42 @@ interface AssignedEventDto {
   timezone: string;
 }
 
-const PAGE_SIZE = 100; // the backend's maximum page size
+interface TicketDto {
+  ticket_id: string;
+  public_id: string;
+  order_number: number;
+  ticket_type_name: string;
+  attendee_name: string | null;
+  attendee_email: string;
+  status: string;
+  checked_in_at: string | null;
+}
+
+interface TicketSearchResultDto {
+  ticket_id: string;
+  public_id: string;
+  event_id: string;
+  order_number: number;
+  attendee_name: string | null;
+  attendee_email: string;
+  ticket_type_name: string;
+  status: string;
+  issued_at: string;
+  checked_in_at: string | null;
+  cancelled_at: string | null;
+}
+
+interface AttendanceStatsDto {
+  event_id: string;
+  total_registered: number;
+  total_checked_in: number;
+  remaining: number;
+  cancelled: number;
+  refunded: number;
+  total_issued: number;
+}
+
+const PAGE_SIZE = 100;
 
 function toAssignedEvent(dto: AssignedEventDto): AssignedEvent {
   return {
@@ -27,48 +68,10 @@ function toAssignedEvent(dto: AssignedEventDto): AssignedEvent {
   };
 }
 
-// Only events where the current user is an Event Admin. The backend filters
-// this in SQL, so nothing else can appear here.
-export async function getAssignedEvents(): Promise<AssignedEvent[]> {
-  const all: AssignedEvent[] = [];
-  for (let offset = 0; ; offset += PAGE_SIZE) {
-    const page = await apiRequest<AssignedEventDto[]>(
-      `/events/assigned?limit=${PAGE_SIZE}&offset=${offset}`
-    );
-    all.push(...page.map(toAssignedEvent));
-    if (page.length < PAGE_SIZE) break;
-  }
-  return all;
-}
-
-// GET /events/{id} is owner-only on the backend, so an Event Admin can't use
-// it. Look the event up in the assigned list instead.
-export async function getEventDetails(eventId: string): Promise<EventDetails | null> {
-  const events = await getAssignedEvents();
-  return events.find((e) => e.id === eventId) ?? null;
-}
-
-// Shape returned by POST /events/{id}/check-in (backend TicketResponse).
-interface TicketDto {
-  ticket_id: string;
-  order_number: number;
-  ticket_type_name: string;
-  attendee_name: string | null;
-  attendee_email: string;
-  status: string;
-  checked_in_at: string | null;
-}
-
-// Admits the ticket behind a scanned QR code. Throws ApiError on failure:
-//   409 TICKET_ALREADY_CHECKED_IN (details.checked_in_at), 409 TICKET_NOT_VALID,
-//   401 INVALID_TICKET_QR, 404 TICKET_NOT_FOUND, 403 INSUFFICIENT_EVENT_PERMISSIONS.
-export async function checkInTicket(eventId: string, qrPayload: string): Promise<CheckedInTicket> {
-  const dto = await apiRequest<TicketDto>(`/events/${eventId}/check-in`, {
-    method: 'POST',
-    body: JSON.stringify({ qr_payload: qrPayload }),
-  });
+function toCheckedInTicket(dto: TicketDto): CheckedInTicket {
   return {
     ticketId: dto.ticket_id,
+    publicId: dto.public_id,
     attendeeName: dto.attendee_name,
     attendeeEmail: dto.attendee_email,
     ticketType: dto.ticket_type_name,
@@ -78,35 +81,102 @@ export async function checkInTicket(eventId: string, qrPayload: string): Promise
   };
 }
 
-const FAKE_PARTICIPANTS: Record<string, Participant[]> = {
-  '1': [
-    { id: 'p1', name: 'Aigerim Nurlan', email: 'aigerim@example.com', ticketType: 'General', checkedIn: true, checkedInAt: '2026-11-10T09:12:00Z' },
-    { id: 'p2', name: 'Daniyar Omarov', email: 'daniyar@example.com', ticketType: 'VIP', checkedIn: false },
-    { id: 'p3', name: 'Madina Sadykova', email: 'madina@example.com', ticketType: 'General', checkedIn: false },
-  ],
-  '2': [
-    { id: 'p4', name: 'Timur Bekov', email: 'timur@example.com', ticketType: 'General', checkedIn: false },
-  ],
-};
-
-export function getParticipants(eventId: string): Promise<Participant[]> {
-  return Promise.resolve((FAKE_PARTICIPANTS[eventId] ?? []).map((p) => ({ ...p })));
+function toEventTicket(dto: TicketSearchResultDto): EventTicket {
+  return {
+    ticketId: dto.ticket_id,
+    publicId: dto.public_id,
+    eventId: dto.event_id,
+    orderNumber: dto.order_number,
+    attendeeName: dto.attendee_name,
+    attendeeEmail: dto.attendee_email,
+    ticketType: dto.ticket_type_name,
+    status: dto.status,
+    issuedAt: dto.issued_at,
+    checkedInAt: dto.checked_in_at,
+    cancelledAt: dto.cancelled_at,
+  };
 }
 
-export function checkInParticipant(eventId: string, participantId: string): Promise<void> {
-  const p = FAKE_PARTICIPANTS[eventId]?.find((x) => x.id === participantId);
-  if (p) {
-    p.checkedIn = true;
-    p.checkedInAt = new Date().toISOString();
+export async function getAssignedEvents(): Promise<AssignedEvent[]> {
+  const all: AssignedEvent[] = [];
+
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    const page = await apiRequest<AssignedEventDto[]>(
+      `/events/assigned?limit=${PAGE_SIZE}&offset=${offset}`,
+    );
+    all.push(...page.map(toAssignedEvent));
+    if (page.length < PAGE_SIZE) break;
   }
-  return Promise.resolve();
+
+  return all;
 }
 
-export function undoCheckInParticipant(eventId: string, participantId: string): Promise<void> {
-  const p = FAKE_PARTICIPANTS[eventId]?.find((x) => x.id === participantId);
-  if (p) {
-    p.checkedIn = false;
-    p.checkedInAt = undefined;
-  }
-  return Promise.resolve();
+export async function getEventDetails(eventId: string): Promise<EventDetails | null> {
+  const events = await getAssignedEvents();
+  return events.find((event) => event.id === eventId) ?? null;
+}
+
+export async function getEventAttendanceStats(eventId: string): Promise<AttendanceStats> {
+  const dto = await apiRequest<AttendanceStatsDto>(
+    `/events/${encodeURIComponent(eventId)}/tickets/stats`,
+  );
+  return {
+    totalRegistered: dto.total_registered,
+    totalCheckedIn: dto.total_checked_in,
+    remaining: dto.remaining,
+    cancelled: dto.cancelled,
+    refunded: dto.refunded,
+    totalIssued: dto.total_issued,
+  };
+}
+
+// Admits the ticket behind a scanned QR code. Throws ApiError on failure:
+//   409 TICKET_ALREADY_CHECKED_IN (details.checked_in_at), 409 TICKET_NOT_VALID,
+//   401 INVALID_TICKET_QR, 404 TICKET_NOT_FOUND, 403 INSUFFICIENT_EVENT_PERMISSIONS.
+export async function checkInTicket(eventId: string, qrPayload: string): Promise<CheckedInTicket> {
+  const dto = await apiRequest<TicketDto>(`/events/${encodeURIComponent(eventId)}/check-in`, {
+    method: 'POST',
+    body: JSON.stringify({ qr_payload: qrPayload }),
+  });
+  return toCheckedInTicket(dto);
+}
+
+export async function searchEventTickets(
+  eventId: string,
+  query: string,
+  options: { limit?: number; offset?: number } = {},
+): Promise<EventTicket[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const limit = options.limit ?? 50;
+  const offset = options.offset ?? 0;
+  const params = `q=${encodeURIComponent(trimmed)}&limit=${limit}&offset=${offset}`;
+
+  const rows = await apiRequest<TicketSearchResultDto[]>(
+    `/events/${encodeURIComponent(eventId)}/tickets/search?${params}`,
+  );
+  return rows.map(toEventTicket);
+}
+
+export async function manualCheckInTicket(
+  eventId: string,
+  publicId: string,
+): Promise<CheckedInTicket> {
+  const dto = await apiRequest<TicketDto>(
+    `/events/${encodeURIComponent(eventId)}/tickets/${encodeURIComponent(publicId)}/check-in`,
+    { method: 'POST' },
+  );
+  return toCheckedInTicket(dto);
+}
+
+export async function reverseCheckInTicket(
+  eventId: string,
+  publicId: string,
+): Promise<CheckedInTicket> {
+  const dto = await apiRequest<TicketDto>(
+    `/events/${encodeURIComponent(eventId)}/tickets/${encodeURIComponent(publicId)}/reverse-check-in`,
+    { method: 'POST' },
+  );
+  return toCheckedInTicket(dto);
 }

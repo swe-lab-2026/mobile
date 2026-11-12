@@ -21,6 +21,7 @@ import type { CheckedInTicket } from '../../types/event';
 
 const SCAN_COOLDOWN_MS = 1500;
 const FRAME_SIZE = 250;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type ScanState =
   | { kind: 'idle' }
@@ -52,6 +53,8 @@ function errorMessage(e: unknown): string {
         return 'This ticket is not valid (cancelled or refunded).';
       case 'INSUFFICIENT_EVENT_PERMISSIONS':
         return 'You are not allowed to check in for this event.';
+      case 'NETWORK_ERROR':
+        return 'Cannot reach the server. Check your connection.';
     }
     return e.message;
   }
@@ -60,7 +63,8 @@ function errorMessage(e: unknown): string {
 
 export default function ScannerScreen() {
   const router = useRouter();
-  const { eventId } = useLocalSearchParams<{ eventId: string }>();
+  const params = useLocalSearchParams<{ eventId?: string | string[] }>();
+  const eventId = Array.isArray(params.eventId) ? params.eventId[0] : params.eventId;
   const [permission, requestPermission] = useCameraPermissions();
   const [state, setState] = useState<ScanState>({ kind: 'idle' });
   const [torchOn, setTorchOn] = useState(false);
@@ -71,14 +75,17 @@ export default function ScannerScreen() {
     async ({ data }: BarcodeScanningResult) => {
       const now = Date.now();
       if (busyRef.current || now - lastScanTimeRef.current < SCAN_COOLDOWN_MS) return;
-      lastScanTimeRef.current = now;
-      busyRef.current = true;
 
-      if (!eventId) {
-        setState({ kind: 'error', message: 'No event selected. Open the scanner from an event.' });
+      if (!eventId || !UUID_PATTERN.test(eventId)) {
+        setState({
+          kind: 'error',
+          message: 'No valid event selected. Open the scanner from an event.',
+        });
         return;
       }
 
+      lastScanTimeRef.current = now;
+      busyRef.current = true;
       setState({ kind: 'loading' });
       try {
         const ticket = await checkInTicket(eventId, data);
