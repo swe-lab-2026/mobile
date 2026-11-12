@@ -128,6 +128,103 @@ export async function getEventAttendanceStats(eventId: string): Promise<Attendan
     refunded: dto.refunded,
     totalIssued: dto.total_issued,
   };
+// ---------- participants (GET /events/{id}/attendees) ----------
+
+// The attendees response shape is not confirmed. This DTO follows the check-in
+// ticket response, and the mapper below also accepts a few alternative names.
+interface AttendeeDto {
+  ticket_id?: string;
+  id?: string;
+  public_id?: string;
+  order_number?: number;
+  ticket_type_name?: string;
+  attendee_name?: string | null;
+  attendee_email?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  email?: string | null;
+  status?: string;
+  ticket_status?: string;
+  checked_in_at?: string | null;
+}
+
+// Accepts a plain array, { items: [...] }, { data: [...] } or { data: { items: [...] } }.
+function toArray(body: any): AttendeeDto[] {
+  if (Array.isArray(body)) return body;
+  const inner = body?.data ?? body;
+  if (Array.isArray(inner)) return inner;
+  return inner?.items ?? inner?.results ?? [];
+}
+
+function toParticipant(a: AttendeeDto): Participant {
+  const fullName = [a.first_name, a.last_name].filter(Boolean).join(' ');
+  const email = a.attendee_email ?? a.email ?? undefined;
+  const status = a.status ?? a.ticket_status;
+  return {
+    id: String(a.ticket_id ?? a.public_id ?? a.id),
+    name: a.attendee_name || fullName || email || 'Unknown',
+    email,
+    ticketType: a.ticket_type_name,
+    checkedIn: status === 'CHECKED_IN' || Boolean(a.checked_in_at),
+    checkedInAt: a.checked_in_at ?? undefined,
+  };
+}
+
+export async function getParticipants(eventId: string): Promise<Participant[]> {
+  const all: AttendeeDto[] = [];
+  let previousFirstId: string | undefined;
+
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    const body = await apiRequest<unknown>(
+      `/events/${eventId}/attendees?limit=${PAGE_SIZE}&offset=${offset}`
+    );
+    // console.log(JSON.stringify(body, null, 2)); // uncomment to see the real response
+    const page = toArray(body);
+
+    // stop if the backend ignores paging and returns the same page again
+    const firstId = page[0] && String(page[0].ticket_id ?? page[0].id ?? page[0].public_id);
+    if (offset > 0 && firstId && firstId === previousFirstId) break;
+    previousFirstId = firstId;
+
+    all.push(...page);
+    if (page.length < PAGE_SIZE) break;
+  }
+
+  return all.map(toParticipant);
+}
+
+// GET /events/{id} is owner-only on the backend, so an Event Admin can't use
+// it. Look the event up in the assigned list instead, and add the counters
+// from the attendee list when the backend allows it.
+export async function getEventDetails(eventId: string): Promise<EventDetails | null> {
+  const events = await getAssignedEvents();
+  const event = events.find((e) => e.id === eventId);
+  if (!event) return null;
+
+  try {
+    const participants = await getParticipants(eventId);
+    return {
+      ...event,
+      registeredCount: participants.length,
+      checkedInCount: participants.filter((p) => p.checkedIn).length,
+    };
+  } catch {
+    // attendees not available for this user: show the event without counters
+    return event;
+  }
+}
+
+// ---------- check-in by QR ----------
+
+// Shape returned by POST /events/{id}/check-in (backend TicketResponse).
+interface TicketDto {
+  ticket_id: string;
+  order_number: number;
+  ticket_type_name: string;
+  attendee_name: string | null;
+  attendee_email: string;
+  status: string;
+  checked_in_at: string | null;
 }
 
 // Admits the ticket behind a scanned QR code. Throws ApiError on failure:
@@ -179,4 +276,18 @@ export async function reverseCheckInTicket(
     { method: 'POST' },
   );
   return toCheckedInTicket(dto);
+}
+// ---------- manual check-in ----------
+// The backend only checks tickets in through a scanned QR code. There is no
+// endpoint to check in or undo by participant yet, so these two fail on purpose
+// instead of pretending to work.
+export async function checkInParticipant(_eventId: string, _participantId: string): Promise<void> {
+  throw new Error('Manual check-in is not available on the backend yet.');
+}
+
+export async function undoCheckInParticipant(
+  _eventId: string,
+  _participantId: string
+): Promise<void> {
+  throw new Error('Undo check-in is not available on the backend yet.');
 }
