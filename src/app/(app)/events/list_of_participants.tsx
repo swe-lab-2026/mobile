@@ -1,23 +1,22 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    Modal,
-    Pressable,
-    RefreshControl,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Modal,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-    checkInParticipant,
-    getParticipants,
-    undoCheckInParticipant,
+  checkInParticipant,
+  getParticipants,
+  undoCheckInParticipant,
 } from '../../../api/events';
 import { Participant } from '../../../types/event';
 
@@ -29,13 +28,15 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'notCheckedIn', label: 'Not yet' },
 ];
 
-function initials(name: string) {
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((p) => p[0].toUpperCase())
-    .join('');
+function initials(name?: string) {
+  return (
+    (name ?? '?')
+      .split(' ')
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((p) => p[0].toUpperCase())
+      .join('') || '?'
+  );
 }
 
 function formatCheckInTime(value?: string) {
@@ -60,8 +61,7 @@ export default function ParticipantsScreen() {
   const load = useCallback(async () => {
     if (!id) return;
     try {
-      const data = await getParticipants(id);
-      setParticipants(data);
+      setParticipants(await getParticipants(id));
     } catch {
       Alert.alert('Error', 'Could not load participants.');
     }
@@ -86,7 +86,7 @@ export default function ParticipantsScreen() {
       if (filter === 'notCheckedIn' && p.checkedIn) return false;
       if (!q) return true;
       return (
-        p.name.toLowerCase().includes(q) ||
+        (p.name ?? '').toLowerCase().includes(q) ||
         (p.email ?? '').toLowerCase().includes(q)
       );
     });
@@ -136,9 +136,7 @@ export default function ParticipantsScreen() {
   }
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
-      <StatusBar barStyle="dark-content" />
-
+    <SafeAreaView style={styles.container} edges={['top']}>
       <Pressable
         onPress={() => router.back()}
         style={({ pressed }) => [styles.backPill, pressed && styles.pressed]}
@@ -209,7 +207,7 @@ export default function ParticipantsScreen() {
 
             <View style={styles.cardBody}>
               <Text style={styles.rowTitle} numberOfLines={1}>
-                {item.name}
+                {item.name ?? 'Unknown'}
               </Text>
               {item.email || item.ticketType ? (
                 <Text style={styles.rowSubtitle} numberOfLines={1}>
@@ -220,7 +218,10 @@ export default function ParticipantsScreen() {
 
             <View style={[styles.badge, item.checkedIn ? styles.badgeDone : styles.badgePending]}>
               <Text
-                style={[styles.badgeText, item.checkedIn ? styles.badgeTextDone : styles.badgeTextPending]}
+                style={[
+                  styles.badgeText,
+                  item.checkedIn ? styles.badgeTextDone : styles.badgeTextPending,
+                ]}
               >
                 {item.checkedIn ? 'Checked in' : 'Not yet'}
               </Text>
@@ -229,7 +230,6 @@ export default function ParticipantsScreen() {
         )}
       />
 
-      {/* Action sheet */}
       <Modal
         visible={!!selected}
         transparent
@@ -247,12 +247,14 @@ export default function ParticipantsScreen() {
               <>
                 <View style={styles.sheetHeader}>
                   <View style={[styles.avatar, selected.checkedIn && styles.avatarDone]}>
-                    <Text style={[styles.avatarText, selected.checkedIn && styles.avatarTextDone]}>
+                    <Text
+                      style={[styles.avatarText, selected.checkedIn && styles.avatarTextDone]}
+                    >
                       {initials(selected.name)}
                     </Text>
                   </View>
                   <View style={styles.cardBody}>
-                    <Text style={styles.sheetName}>{selected.name}</Text>
+                    <Text style={styles.sheetName}>{selected.name ?? 'Unknown'}</Text>
                     {selected.email ? (
                       <Text style={styles.rowSubtitle}>{selected.email}</Text>
                     ) : null}
@@ -318,7 +320,7 @@ export default function ParticipantsScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -331,7 +333,7 @@ const shadow = {
 } as const;
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 20, backgroundColor: '#f6f7fb' },
+  container: { flex: 1, paddingHorizontal: 20, paddingTop: 12, backgroundColor: '#f6f7fb' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f6f7fb' },
   pressed: { opacity: 0.7 },
 
