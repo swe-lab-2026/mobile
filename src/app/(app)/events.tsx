@@ -3,30 +3,28 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Pressable,
   RefreshControl,
-  StatusBar,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getAssignedEvents } from '../../api/events';
-import { AssignedEvent } from '../../types/event';
-import { useAuth } from '../../store/auth-context';
-import { useSelectedEvent } from '../../store/selected-event-context';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { getAssignedEvents } from '../../api/events';
+import { AppHeader } from '../../components/AppHeader';
+import { colors, shadow } from '../../constants/theme';
+import { useLanguage } from '../../store/language-context';
+import { useSelectedEvent } from '../../store/selected-event-context';
+import { AssignedEvent } from '../../types/event';
 
-function formatDate(value: string) {
-  const d = new Date(value);
-  if(isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric'});
+function pad(n: number) {
+  return String(n).padStart(2, '0');
 }
 
 export default function EventsListScreen() {
-  const insets = useSafeAreaInsets();
-  const { logout } = useAuth();
+  const { t } = useLanguage();
   const { selectEvent } = useSelectedEvent();
+
   const [events, setEvents] = useState<AssignedEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -54,72 +52,136 @@ export default function EventsListScreen() {
   async function retry() {
     setLoading(true);
     await load();
-    setLoading(false);    
+    setLoading(false);
   }
 
   function openEvent(eventId: string) {
     selectEvent(eventId);
-    router.push({pathname: '/events/[id]', params: { id: eventId }});
+    router.push({ pathname: '/events/[id]', params: { id: eventId } });
   }
 
-  if (loading) {
+  function renderItem({ item }: { item: AssignedEvent }) {
+    const d = new Date(item.startsAt);
+    const valid = !isNaN(d.getTime());
+
     return (
-      <View className='flex-1 items-center justify-center bg-white'>
-        <ActivityIndicator />
-      </View>
+      <TouchableOpacity activeOpacity={0.8} onPress={() => openEvent(item.id)} style={styles.card}>
+        <View style={styles.dateBox}>
+          <Text style={styles.dateDay}>{valid ? d.getDate() : '–'}</Text>
+          <Text style={styles.dateMonth}>{valid ? t.months[d.getMonth()] : ''}</Text>
+        </View>
+
+        <View style={styles.cardBody}>
+          <Text style={styles.cardTitle} numberOfLines={2}>
+            {item.name}
+          </Text>
+          {valid ? (
+            <Text style={styles.cardMeta}>
+              {t.days[d.getDay()]} {pad(d.getHours())}:{pad(d.getMinutes())}
+            </Text>
+          ) : null}
+          {item.location ? (
+            <Text style={styles.cardMeta} numberOfLines={1}>
+              {item.location}
+            </Text>
+          ) : null}
+        </View>
+
+        <Text style={styles.arrow}>›</Text>
+      </TouchableOpacity>
     );
   }
 
   return (
-    <SafeAreaView style= {{flex:1, backgroundColor: 'white'}}>
-    <View className='flex-1 bg-white p-4'>
-      <View className='mb-4 flex-row items-center justify-between'>
-        <Text className='text-xl font-semibold'>Your Events</Text>
-        <Pressable onPress={logout} className="active:opacity-60">
-          <Text className='text-sm text-red-600'>Log out</Text>
-        </Pressable>
-      </View>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
+      <AppHeader />
 
-      {error && events.length > 0 && (
-          <Text className="mb-2 text-center text-sm text-red-600">
-            Couldn't refresh. Pull down to try again.
-          </Text>
+      {loading ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={colors.brand} />
+        </View>
+      ) : (
+        <FlatList
+          data={events}
+          keyExtractor={(item) => item.id}
+          renderItem={renderItem}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />
+          }
+          ListHeaderComponent={
+            <View style={styles.hero}>
+              <Text style={styles.title}>{t.navMyEvents}</Text>
+              <Text style={styles.subtitle}>{t.myEventsSubtitle}</Text>
+              {error && events.length > 0 ? (
+                <Text style={styles.errorNote}>{t.error}</Text>
+              ) : null}
+            </View>
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyText}>{error ? t.error : t.empty}</Text>
+              {error ? (
+                <TouchableOpacity activeOpacity={0.8} onPress={retry} style={styles.retryButton}>
+                  <Text style={styles.retryText}>{t.retry}</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          }
+        />
       )}
-
-      <FlatList
-        data={events}
-        keyExtractor={(item) => item.id}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        ListEmptyComponent={
-          error ? (
-            <View className="mt-10 items-center">
-                <Text className="mb-3 text-center text-gray-500">
-                  Couldn't load your events.
-                </Text>
-                <Pressable onPress={retry} className="rounded-lg bg-black px-5 py-2.5 active:opacity-80">
-                  <Text className="font-semibold text-white">Try again</Text>
-                </Pressable>
-              </View>
-          ) : (
-            <Text className='mt-10 text-center text-gray-500'>No events assigned yet.</Text>
-          )
-        }
-        renderItem={({ item }) => {
-          const date = formatDate(item.startsAt);
-          const subtitle = [date, item.location].filter(Boolean).join(' · ');
-          <Pressable
-            className='border-b border-gray-200 py-3.5 active:bg-gray-50'
-            onPress={() => openEvent(item.id)}
-          >
-            <Text className='text-1xl font-medium'>{item.name}</Text>
-            {subtitle ? (
-              <Text className='mt-0.5 text-sm text-gray-500'>{item.location}</Text>
-            ) : null}
-          </Pressable>
-        }}
-      />
-    </View>
     </SafeAreaView>
   );
 }
 
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.bg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  listContent: { paddingHorizontal: 16, paddingBottom: 24 },
+
+  hero: { paddingTop: 28, paddingBottom: 20 },
+  title: { fontSize: 30, fontWeight: '800', letterSpacing: -0.8, color: colors.ink },
+  subtitle: { marginTop: 8, fontSize: 15, lineHeight: 22, color: colors.muted },
+  errorNote: { marginTop: 12, fontSize: 14, color: colors.danger },
+
+  card: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.card,
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#eef0f3',
+    ...shadow,
+  },
+  dateBox: {
+    width: 64,
+    height: 72,
+    borderRadius: 16,
+    backgroundColor: colors.brandSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+  },
+  dateDay: { fontSize: 26, fontWeight: '800', color: colors.brandDark, lineHeight: 30 },
+  dateMonth: { fontSize: 11, fontWeight: '800', color: colors.brandDark, letterSpacing: 0.6 },
+  cardBody: { flex: 1 },
+  cardTitle: { fontSize: 17, fontWeight: '700', color: colors.ink, lineHeight: 22, marginBottom: 4 },
+  cardMeta: { fontSize: 14, color: colors.muted, marginTop: 2 },
+  arrow: { fontSize: 26, color: '#c4c8cf', marginLeft: 8 },
+
+  emptyBox: { alignItems: 'center', marginTop: 48, paddingHorizontal: 24 },
+  emptyText: { fontSize: 16, color: colors.muted, textAlign: 'center', lineHeight: 22 },
+  retryButton: {
+    marginTop: 18,
+    height: 46,
+    paddingHorizontal: 24,
+    borderRadius: 14,
+    backgroundColor: colors.ink,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  retryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+});

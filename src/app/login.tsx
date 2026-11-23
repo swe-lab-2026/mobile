@@ -1,59 +1,107 @@
-import { useState } from 'react';
-import { View, TextInput, Text, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
 import { router } from 'expo-router';
+import { useState } from 'react';
+import { Text, View } from 'react-native';
+import {
+  authErrorMessage,
+  AuthLayout,
+  authStyles,
+  Field,
+  LinkText,
+  Notice,
+  PrimaryButton,
+  SwitchRow,
+} from '../components/AuthUI';
 import { useAuth } from '../store/auth-context';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useLanguage } from '../store/language-context';
 
 export default function LoginScreen() {
   const { login } = useAuth();
+  const { t } = useLanguage();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [notVerified, setNotVerified] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  function goBack() {
+    // go back if there is a previous screen, otherwise open the catalog (index)
+    if (router.canGoBack()) router.back();
+    else router.replace('/');
+  }
 
   async function handleSubmit() {
     setError(null);
+    setNotVerified(false);
+
+    if (!email.trim() || !password) {
+      setError(t.errFields);
+      return;
+    }
+
     setSubmitting(true);
     try {
-        await login(email.trim(), password);
-        router.replace('/events');
+      await login(email.trim(), password);
+      router.replace('/events');
     } catch (err) {
-        setError('Something went wrong. Please try again.');
+      setNotVerified((err as any)?.code === 'EMAIL_NOT_VERIFIED');
+      setError(authErrorMessage(err, t));
     } finally {
-        setSubmitting(false);
+      setSubmitting(false);
     }
   }
 
   return (
-    <SafeAreaView style= {{flex:1, backgroundColor: 'white'}}>
-    <View className='flex-1 justify-center p-6 gap-3 bg-white'>
-      <Text className='text-3xl font-semibold text-center'>Sign In</Text>
+    <AuthLayout onBack={goBack}>
+      <Text style={authStyles.title}>{t.loginTitle}</Text>
+      <Text style={authStyles.subtitle}>{t.loginSubtitle}</Text>
 
-      <TextInput
-        className='border border-gray-300 rounded-lg p-3 text-base'
-        placeholder="Email"
-        autoCapitalize="none"
-        keyboardType="email-address"
+      <Field
+        label={t.email}
+        placeholder="name@example.com"
         value={email}
         onChangeText={setEmail}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="email-address"
+        autoComplete="email"
       />
-      <TextInput
-        className='border border-gray-300 rounded-lg p-3 text-base'
-        placeholder="Password"
-        secureTextEntry
+      <Field
+        label={t.password}
+        placeholder="••••••••"
         value={password}
         onChangeText={setPassword}
+        secure
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="password"
+        onSubmitEditing={handleSubmit}
+        returnKeyType="go"
       />
 
-      {error && <Text className="text-red-600 text-center">{error}</Text>}
+      {error ? <Notice kind="error" text={error} /> : null}
 
-      <Pressable 
-      className={`rounded-lg p-3.5 items-center mt-2 ${submitting ? 'bg-gray-400' : 'bg-black'}`}
-      onPress={handleSubmit} 
-      disabled={submitting}>
-        {submitting ? <ActivityIndicator color="#fff" /> : <Text className='text-white font-semibold text-lg'>Log In</Text>}
-      </Pressable>
-    </View>
-    </SafeAreaView>
+      {notVerified ? (
+        <View style={{ marginBottom: 14 }}>
+          <LinkText
+            label={t.verifyNow}
+            onPress={() =>
+              router.push({
+                pathname: '/register',
+                params: { email: email.trim(), verify: '1' },
+              })
+            }
+          />
+        </View>
+      ) : null}
+
+      <PrimaryButton label={t.login} onPress={handleSubmit} loading={submitting} />
+
+      <SwitchRow
+        text={t.noAccount}
+        link={t.register}
+        onPress={() => router.push('/register')}
+      />
+    </AuthLayout>
   );
 }

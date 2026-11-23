@@ -1,4 +1,4 @@
-const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
+const BASE_URL = "http://130.210.14.131/api/v1"
 
 let accessToken: string | null = null;
 let handlers: { refresh: () => Promise<string | null>; onExpired: () => void } | null = null;
