@@ -119,6 +119,8 @@ export default function LoginScreen() {
               <Text className="text-lg font-semibold text-white">Log In</Text>
             )}
           </Pressable>
+          <Pressable onPress={() => router.push('/register')}><Text className="mt-3 text-center text-blue-700">Create an account</Text></Pressable>
+          <Pressable onPress={() => router.push('/forgot-password')}><Text className="mt-1 text-center text-slate-500">Forgot password?</Text></Pressable>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
