@@ -1,10 +1,11 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError } from '../../../api/client';
 import { getEventAttendanceStats, getEventDetails } from '../../../api/events';
 import { AttendanceStats, EventDetails } from '../../../types/event';
+import { EventRecord, organizerEvents } from '../../../api/organizer';
 import { useSelectedEvent } from '../../../store/selected-event-context';
 
 function formatDate(value?: string) {
@@ -51,6 +52,8 @@ export default function EventDetailScreen() {
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const { selectEvent } = useSelectedEvent();
   const [event, setEvent] = useState<EventDetails | null>(null);
+  const [managedEvent, setManagedEvent] = useState<EventRecord | null>(null);
+  const [managementError, setManagementError] = useState('');
   const [stats, setStats] = useState<AttendanceStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [statsLoading, setStatsLoading] = useState(false);
@@ -73,6 +76,7 @@ export default function EventDetailScreen() {
       .then((found) => {
         if (!active) return;
         setEvent(found);
+        if (found) organizerEvents.get(found.id).then(setManagedEvent).catch(() => setManagedEvent(null));
         setLoadError(null);
         setLoading(false);
         setStats(null);
@@ -243,6 +247,21 @@ export default function EventDetailScreen() {
               ))}
             </View>
           ) : null}
+
+          <View className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <Text className="mb-2 text-base font-bold text-slate-900">Organizer management</Text>
+            {managedEvent ? <Text className="mb-3 text-sm text-slate-500">Status: {managedEvent.status} · Visibility: {managedEvent.visibility}</Text> : <Text className="mb-3 text-xs text-slate-500">Management actions are available to the event owner.</Text>}
+            {managementError ? <Text className="mb-2 text-sm text-red-600">{managementError}</Text> : null}
+            <Pressable className="mb-2 items-center rounded-lg border border-slate-300 bg-white p-3" onPress={() => router.push({ pathname: '/edit-event', params: { id: currentEvent.id } })}><Text className="font-semibold">Edit event</Text></Pressable>
+            <Pressable className="mb-2 items-center rounded-lg border border-slate-300 bg-white p-3" onPress={() => router.push({ pathname: '/tickets', params: { eventId: currentEvent.id } })}><Text className="font-semibold">Manage ticket types & inventory</Text></Pressable>
+            <Pressable className="mb-2 items-center rounded-lg border border-slate-300 bg-white p-3" onPress={() => router.push({ pathname: '/admins', params: { eventId: currentEvent.id } })}><Text className="font-semibold">Manage event administrators</Text></Pressable>
+            <Pressable className="mb-2 items-center rounded-lg border border-slate-300 bg-white p-3" onPress={async () => { try { const p = await organizerEvents.preview(currentEvent.id); Alert.alert(p.publish_ready ? 'Ready to publish' : 'Publishing checklist', p.validation_errors.length ? p.validation_errors.join('\n') : 'All publishing requirements are satisfied.'); } catch (e: any) { setManagementError(e.message ?? 'Could not load publishing checklist'); } }}><Text className="font-semibold">Publishing checklist</Text></Pressable>
+            {managedEvent ? <>
+              <Pressable className="mb-2 items-center rounded-lg bg-blue-600 p-3" onPress={async () => { try { const updated = managedEvent.status === 'PUBLISHED' ? await organizerEvents.unpublish(currentEvent.id) : await organizerEvents.publish(currentEvent.id); setManagedEvent(updated); Alert.alert('Event updated', `New status: ${updated.status}`); } catch (e: any) { setManagementError(e.message ?? 'Could not update publishing status'); } }}><Text className="font-semibold text-white">{managedEvent.status === 'PUBLISHED' ? 'Unpublish event' : 'Publish event'}</Text></Pressable>
+              <Pressable className="mb-2 items-center rounded-lg border border-slate-300 bg-white p-3" onPress={() => Alert.alert('Duplicate event?', 'Create a draft copy of this event?', [{ text: 'Cancel', style: 'cancel' }, { text: 'Duplicate', onPress: async () => { try { const copy = await organizerEvents.duplicate(currentEvent.id); router.replace({ pathname: '/events/[id]', params: { id: copy.id } }); } catch (e: any) { setManagementError(e.message ?? 'Could not duplicate event'); } } }])}><Text className="font-semibold">Duplicate event</Text></Pressable>
+              <Pressable className="items-center rounded-lg border border-red-200 bg-white p-3" onPress={() => Alert.alert('Cancel event?', 'This changes the event status to CANCELLED.', [{ text: 'Keep event', style: 'cancel' }, { text: 'Cancel event', style: 'destructive', onPress: async () => { try { const updated = await organizerEvents.cancel(currentEvent.id); setManagedEvent(updated); } catch (e: any) { setManagementError(e.message ?? 'Could not cancel event'); } } }])}><Text className="font-semibold text-red-600">Cancel event</Text></Pressable>
+            </> : null}
+          </View>
 
           <Pressable
             className="mb-3 items-center rounded-lg bg-black p-3.5 active:opacity-80"
