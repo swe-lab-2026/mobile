@@ -1,22 +1,34 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    FlatList,
-    Pressable,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CatalogEvent, getCatalogEvents } from '../../api/events';
-import { AppHeader } from '../../components/AppHeader';
-import { BRAND } from '../../components/Logo';
-import { useLanguage } from '../../store/language-context';
+import { CatalogEvent, getCatalogEvents } from '../api/events';
+import { AppHeader } from '../components/AppHeader';
+import { BRAND } from '../components/Logo';
+import { useLanguage } from '../store/language-context';
 
 function pad(n: number) {
   return String(n).padStart(2, '0');
+}
+
+function isUpcoming(e: CatalogEvent, now: number) {
+  const end = new Date(e.endsAt).getTime();
+  if (!isNaN(end)) return end >= now;
+  const start = new Date(e.startsAt).getTime();
+  return !isNaN(start) && start >= now;
+}
+
+function startTime(e: CatalogEvent) {
+  const t = new Date(e.startsAt).getTime();
+  return isNaN(t) ? Number.MAX_SAFE_INTEGER : t;
 }
 
 export default function CatalogScreen() {
@@ -54,11 +66,17 @@ export default function CatalogScreen() {
   }
 
   const visible = useMemo(() => {
+    const now = Date.now();
     const q = query.trim().toLowerCase();
-    if (!q) return events;
-    return events.filter((e) =>
-      [e.title, e.venueName, e.city].filter(Boolean).join(' ').toLowerCase().includes(q)
-    );
+
+    return events
+      .filter((e) => isUpcoming(e, now))
+      .filter((e) =>
+        q
+          ? [e.title, e.venueName, e.city].filter(Boolean).join(' ').toLowerCase().includes(q)
+          : true
+      )
+      .sort((a, b) => startTime(a) - startTime(b)); // nearest first
   }, [events, query]);
 
   function renderItem({ item }: { item: CatalogEvent }) {

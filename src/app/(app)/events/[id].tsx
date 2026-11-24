@@ -4,19 +4,30 @@ import {
   ActivityIndicator,
   Pressable,
   ScrollView,
+  StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getEventDetails } from '../../../api/events';
-import { EventDetails } from '../../../types/event';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { ApiError } from '../../../api/client';
+import { getEventAttendanceStats, getEventDetails } from '../../../api/events';
+import { authStyles, Notice, PrimaryButton } from '../../../components/AuthUI';
+import { LanguagePicker } from '../../../components/LanguagePicker';
+import { Lang, useLanguage } from '../../../store/language-context';
+import { useSelectedEvent } from '../../../store/selected-event-context';
+import { AttendanceStats, EventDetails } from '../../../types/event';
 
-function formatDate(value?: string) {
+const LOCALES: Record<Lang, string> = {
+  ru: 'ru-RU',
+  kk: 'kk-KZ',
+  en: 'en-GB',
+};
+
+function formatDate(value: string | undefined, locale: string) {
   if (!value) return null;
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(undefined, {
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(locale, {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
@@ -24,145 +35,418 @@ function formatDate(value?: string) {
   });
 }
 
-function formatTime(value?: string) {
+function formatTime(value: string | undefined, locale: string) {
   if (!value) return null;
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return null;
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
 }
 
 type InfoRowProps = {
   icon: string;
   label: string;
-  value?: string | null;
+  value: string;
   last?: boolean;
 };
 
 function InfoRow({ icon, label, value, last }: InfoRowProps) {
-  if (!value) return null;
   return (
-    <View className={`flex-row items-center py-3 ${last ? '' : 'border-b border-gray-100'}`}>
-      <Text className="mr-3 text-xl">{icon}</Text>
-      <View className="flex-1">
-        <Text className="text-xs uppercase text-gray-500">{label}</Text>
-        <Text className="text-base text-gray-900">{value}</Text>
+    <View style={[styles.infoRow, !last && styles.infoRowBorder]}>
+      <View style={styles.infoIconBadge}>
+        <Text style={styles.infoIcon}>{icon}</Text>
+      </View>
+      <View style={styles.infoContent}>
+        <Text style={styles.infoLabel}>{label}</Text>
+        <Text style={styles.infoValue}>{value}</Text>
       </View>
     </View>
   );
 }
 
 export default function EventDetailScreen() {
-  const insets = useSafeAreaInsets();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { t, lang } = useLanguage();
+  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const id = Array.isArray(params.id) ? params.id[0] : params.id;
+  const { selectEvent } = useSelectedEvent();
+
   const [event, setEvent] = useState<EventDetails | null>(null);
+  const [stats, setStats] = useState<AttendanceStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const currentEvent = id && event?.id === id ? event : null;
+  const isLoading = !!id && (loading || event?.id !== id);
+  const locale = LOCALES[lang];
 
   useEffect(() => {
-    if (!id) return;
+    let active = true;
+
+    if (!id) {
+      return () => {
+        active = false;
+      };
+    }
+
     getEventDetails(id)
-      .then(setEvent)
-      .catch(() => setEvent(null))
-      .finally(() => setLoading(false));
-  }, [id]);
+      .then((found) => {
+        if (!active) return;
+        setEvent(found);
+        setLoadError(null);
+        setLoading(false);
+        setStats(null);
+        setStatsError(false);
 
-  if (loading) {
-    return (
-      <View className='flex-1 items-center justify-center bg-white'>
-        <ActivityIndicator />
-      </View>
-    );
-  }
+        if (!found) return;
 
-  if (!event) {
+        selectEvent(id);
+        setStatsLoading(true);
+        getEventAttendanceStats(found.id)
+          .then((data) => {
+            if (active) setStats(data);
+          })
+          .catch(() => {
+            if (active) setStatsError(true);
+          })
+          .finally(() => {
+            if (active) setStatsLoading(false);
+          });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setEvent(null);
+        setStatsError(true);
+        setLoading(false);
+        setLoadError(
+          error instanceof ApiError && error.status === 0
+            ? t.errNetwork
+            : t.errLoadEvent,
+        );
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [id, selectEvent, t.errLoadEvent, t.errNetwork]);
+
+  const topBar = (
+    <View style={styles.topBar}>
+      <Pressable
+        onPress={() => router.back()}
+        style={({ pressed }) => [styles.backLink, pressed && styles.pressed]}>
+        <Text style={styles.backText}>‹ {t.back}</Text>
+      </Pressable>
+      <LanguagePicker />
+    </View>
+  );
+
+  if (!id) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: 'white' }}>
-        <View className="flex-1 items-center justify-center bg-white p-4">
-          <Text className="mb-4">Event not found.</Text>
-          <Pressable onPress={() => router.back()}>
-            <Text className="text-blue-600">‹ Back</Text>
-          </Pressable>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.scrollContent}>
+          {topBar}
+          <View style={styles.emptyBox}>
+            <Text style={styles.emptyTitle}>{t.noEventSelected}</Text>
+            <Text style={styles.emptySubtitle}>{t.chooseEventFirst}</Text>
+          </View>
         </View>
       </SafeAreaView>
     );
   }
 
-  const registered = event.registeredCount ?? 0;
-  const checkedIn = event.checkedInCount ?? 0;
-  const progress = registered > 0 ? Math.min(checkedIn / registered, 1) : 0;
+  if (isLoading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator color="#111827" />
+      </View>
+    );
+  }
+
+  if (!currentEvent) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.scrollContent}>
+          {topBar}
+          <View style={styles.emptyBox}>
+            <Text style={styles.emptyTitle}>{t.eventUnavailable}</Text>
+            <Text style={styles.emptySubtitle}>
+              {loadError ?? t.eventNotFound}
+            </Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const registered = stats?.totalRegistered;
+  const checkedIn = stats?.totalCheckedIn;
+  const progress =
+    stats && stats.totalRegistered > 0
+      ? Math.min(stats.totalCheckedIn / stats.totalRegistered, 1)
+      : 0;
   const percent = Math.round(progress * 100);
 
-  const date = formatDate(event.startsAt);
-  const startTime = formatTime(event.startsAt);
-  const endTime = formatTime(event.endsAt);
+  const date = formatDate(currentEvent.startsAt, locale);
+  const startTime = formatTime(currentEvent.startsAt, locale);
+  const endTime = formatTime(currentEvent.endsAt, locale);
   const time = startTime && endTime ? `${startTime} – ${endTime}` : startTime;
 
-  const rows = [
-    { icon: '📅', label: 'Date', value: date },
-    { icon: '🕒', label: 'Time', value: time },
-    { icon: '📍', label: 'Location', value: event.location },
-    { icon: '👤', label: 'Organizer', value: event.organizer },
-  ];
-  const visibleRows = rows.filter((r) => r.value);
+  const visibleRows = [
+    { icon: '📅', label: t.dateLabel, value: date },
+    { icon: '🕒', label: t.timeLabel, value: time },
+    { icon: '📍', label: t.locationLabel, value: currentEvent.location },
+    { icon: '👤', label: t.organizerLabel, value: currentEvent.organizer },
+  ].filter((row): row is { icon: string; label: string; value: string } => Boolean(row.value));
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: 'white' }}>
-      <ScrollView className="flex-1 bg-white">
-        <View className="p-4">
-          <Pressable onPress={() => router.back()} className="mb-4 self-start active:opacity-60">
-            <Text className="text-base text-blue-600">‹ Back</Text>
-          </Pressable>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}>
+        {topBar}
 
-          <Text className="mb-5 text-xl font-semibold">{event.name}</Text>
+        <Text style={authStyles.title}>{currentEvent.name}</Text>
+        <Text style={authStyles.subtitle}>
+          {currentEvent.status
+            ? `${t.statusLabel}: ${currentEvent.status}`
+            : t.eventOverview}
+        </Text>
 
-          <View className="mb-4 flex-row gap-3">
-            <View className="flex-1 items-center rounded-xl border border-gray-200 p-4">
-              <Text className="text-3xl font-bold">{registered}</Text>
-              <Text className="mt-1 text-sm text-gray-500">Registered</Text>
-            </View>
-            <View className="flex-1 items-center rounded-xl border border-gray-200 p-4">
-              <Text className="text-3xl font-bold">{checkedIn}</Text>
-              <Text className="mt-1 text-sm text-gray-500">Checked In</Text>
-            </View>
+        {/* Attendance metrics */}
+        <View style={styles.metricsRow}>
+          <View style={styles.metricCard}>
+            <Text style={styles.metricValue}>{registered ?? '—'}</Text>
+            <Text style={styles.metricLabel}>{t.registeredCount}</Text>
           </View>
-
-          <View className="mb-6">
-            <View className="h-2 overflow-hidden rounded-full bg-gray-200">
-              <View className="h-2 rounded-full bg-green-500" style={{ width: `${percent}%` }} />
-            </View>
-            <Text className="mt-1 text-xs text-gray-500">{percent}% checked in</Text>
+          <View style={styles.metricCard}>
+            <Text style={[styles.metricValue, styles.metricValueSuccess]}>
+              {checkedIn ?? '—'}
+            </Text>
+            <Text style={styles.metricLabel}>{t.checkedInCount}</Text>
           </View>
+          <View style={styles.metricCard}>
+            <Text style={styles.metricValue}>{stats?.remaining ?? '—'}</Text>
+            <Text style={styles.metricLabel}>{t.remainingCount}</Text>
+          </View>
+        </View>
 
-          {rows.length > 0 && (
-            <View className="mb-6 rounded-xl border border-gray-200 px-4">
-              {rows.map((r, i) => (
-                <InfoRow
-                  key={r.label}
-                  icon={r.icon}
-                  label={r.label}
-                  value={r.value}
-                  last={i === rows.length - 1}
-                />
-              ))}
+        {/* Progress card */}
+        <View style={styles.sectionCard}>
+          {statsLoading ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator size="small" color="#111827" />
+              <Text style={styles.mutedText}>{t.loadingAttendance}</Text>
             </View>
+          ) : stats ? (
+            <>
+              <View style={styles.progressHeader}>
+                <Text style={styles.sectionTitle}>{t.checkInProgress}</Text>
+                <Text style={styles.progressPercent}>{percent}%</Text>
+              </View>
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${percent}%` }]} />
+              </View>
+              <Text style={styles.progressMeta}>
+                {stats.totalCheckedIn} / {stats.totalRegistered} {t.attendeesCheckedIn}
+              </Text>
+
+              <View style={styles.pillsRow}>
+                <View style={styles.pill}>
+                  <Text style={styles.pillText}>
+                    {t.issuedCount} {stats.totalIssued}
+                  </Text>
+                </View>
+                <View style={styles.pill}>
+                  <Text style={styles.pillText}>
+                    {t.cancelledCount} {stats.cancelled}
+                  </Text>
+                </View>
+                <View style={styles.pill}>
+                  <Text style={styles.pillText}>
+                    {t.refundedCount} {stats.refunded}
+                  </Text>
+                </View>
+              </View>
+            </>
+          ) : statsError ? (
+            <Notice kind="error" text={t.statsUnavailable} />
+          ) : (
+            <Text style={styles.mutedText}>{t.noAttendanceData}</Text>
           )}
+        </View>
 
-          <Pressable
-            className="mb-3 items-center rounded-lg bg-black p-3.5 active:opacity-80"
-            onPress={() => router.push('/scanner')}
-          >
-            <Text className="font-semibold text-white">Open Scanner</Text>
-          </Pressable>
+        {/* Event schedule & location details */}
+        {visibleRows.length > 0 ? (
+          <View style={styles.detailsCard}>
+            {visibleRows.map((row, index) => (
+              <InfoRow
+                key={row.label}
+                icon={row.icon}
+                label={row.label}
+                value={row.value}
+                last={index === visibleRows.length - 1}
+              />
+            ))}
+          </View>
+        ) : null}
 
-          <Pressable
-            className="items-center rounded-lg border border-gray-300 p-3.5 active:bg-gray-50"
+        {/* Actions */}
+        <View style={styles.actions}>
+          <PrimaryButton
+            label={t.openScanner}
             onPress={() =>
-              router.push({ pathname: '../events/list_of_participants', params: { id } })
+              router.push({ pathname: '/scanner', params: { eventId: currentEvent.id } })
             }
-          >
-            <Text className="font-semibold">View participants</Text>
+          />
+
+          <Pressable
+            style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+            onPress={() =>
+              router.push({
+                pathname: '/events/list_of_participants',
+                params: { id: currentEvent.id },
+              })
+            }>
+            <Text style={styles.secondaryButtonText}>{t.viewParticipants}</Text>
           </Pressable>
         </View>
       </ScrollView>
     </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#fff' },
+  scroll: { flex: 1 },
+  scrollContent: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 32 },
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+    backgroundColor: '#fff',
+  },
+  pressed: { opacity: 0.7 },
+
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  backLink: { paddingVertical: 4 },
+  backText: { color: '#111827', fontSize: 15, fontWeight: '600' },
+
+  metricsRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  metricCard: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#fafafa',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 8,
+  },
+  metricValue: { fontSize: 26, fontWeight: '700', color: '#111827' },
+  metricValueSuccess: { color: '#16a34a' },
+  metricLabel: { marginTop: 4, fontSize: 12, fontWeight: '500', color: '#6b7280' },
+
+  sectionCard: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 14,
+  },
+  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  progressHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  sectionTitle: { fontSize: 14, fontWeight: '600', color: '#111827' },
+  progressPercent: { fontSize: 14, fontWeight: '700', color: '#16a34a' },
+  progressTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: '#f3f4f6',
+    overflow: 'hidden',
+  },
+  progressFill: { height: 8, borderRadius: 999, backgroundColor: '#16a34a' },
+  progressMeta: { marginTop: 8, fontSize: 12, color: '#6b7280' },
+  pillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+  },
+  pill: {
+    backgroundColor: '#f3f4f6',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  pillText: { fontSize: 12, fontWeight: '600', color: '#4b5563' },
+  mutedText: { fontSize: 13, color: '#6b7280' },
+
+  detailsCard: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    marginBottom: 20,
+  },
+  infoRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14 },
+  infoRowBorder: { borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
+  infoIconBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#f3f4f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  infoIcon: { fontSize: 17 },
+  infoContent: { flex: 1 },
+  infoLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    color: '#6b7280',
+  },
+  infoValue: { marginTop: 2, fontSize: 15, fontWeight: '500', color: '#111827' },
+
+  actions: { gap: 10 },
+  secondaryButton: {
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  secondaryButtonText: { fontSize: 15, fontWeight: '600', color: '#111827' },
+
+  emptyBox: {
+    alignItems: 'center',
+    marginTop: 32,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 14,
+    backgroundColor: '#fafafa',
+  },
+  emptyTitle: { fontSize: 16, fontWeight: '600', color: '#111827', marginBottom: 4 },
+  emptySubtitle: { textAlign: 'center', fontSize: 14, color: '#6b7280' },
+});

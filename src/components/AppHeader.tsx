@@ -23,14 +23,10 @@ export function AppHeader() {
   const pathname = usePathname();
   const auth: any = useAuth();
   const { t } = useLanguage();
-
   const [headerHeight, setHeaderHeight] = useState(62);
   const [menuOpen, setMenuOpen] = useState(false);
-
-  // auth-context was not shared, so these field names are a guess
   const user = auth.user ?? null;
   const loggedIn = Boolean(user || auth.isAuthenticated || auth.accessToken || auth.token);
-
   const fullName = [user?.first_name ?? user?.firstName, user?.last_name ?? user?.lastName]
     .filter(Boolean)
     .join(' ');
@@ -45,11 +41,11 @@ export function AppHeader() {
 
   const top = insets.top + headerHeight + 6;
 
-  const NAV = [
+    const NAV = [
     { key: 'catalog', label: t.navCatalog, href: '/' as const },
-    { key: 'orders', label: t.navOrders, href: null },
+    { key: 'orders', label: t.navOrders, href: '/orders' as const },
     { key: 'myEvents', label: t.navMyEvents, href: '/events' as const },
-    { key: 'profile', label: t.navProfile, href: null },
+    { key: 'profile', label: t.navProfile, href: '/profile' as const },
   ];
 
     function isActive(href: string | null) {
@@ -57,15 +53,16 @@ export function AppHeader() {
     return pathname === href;
   }
 
-  function openItem(href: '/' | '/events') {
+    function openItem(href: '/' | '/events' | '/orders' | '/profile') {
     setMenuOpen(false);
-    if (!isActive(href)) router.navigate(href);
+    if (isActive(href)) return;
+    setTimeout(() => router.navigate(href), 250); 
   }
-  
+
   async function handleLogout() {
     setMenuOpen(false);
     await auth.logout();
-    router.replace('/');
+    setTimeout(() => router.replace('/'), 250);
   }
 
   return (
