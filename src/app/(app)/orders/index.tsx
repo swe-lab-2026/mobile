@@ -1,5 +1,5 @@
-import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { getOrders, OrderSummary } from '../../../api/account';
 import { Badge, Card, Screen, statusTone } from '../../../components/Screen';
@@ -22,18 +22,26 @@ export default function OrdersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      setOrders(await getOrders());
-      setError(false);
-    } catch {
-      setError(true);
-    }
-  }, []);
+  const load = useCallback(async (showLoader = false) => {
+  if (showLoader) {
+    setLoading(true);
+  }
 
-  useEffect(() => {
-    load().finally(() => setLoading(false));
-  }, [load]);
+  try {
+    setOrders(await getOrders());
+    setError(false);
+  } catch {
+    setError(true);
+  } finally {
+    setLoading(false);
+  }
+}, []);
+
+useFocusEffect(
+  useCallback(() => {
+    void load();
+  }, [load]),
+);
 
   async function onRefresh() {
     setRefreshing(true);

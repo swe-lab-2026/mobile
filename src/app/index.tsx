@@ -14,6 +14,7 @@ import { CatalogEvent, getCatalogEvents } from '../api/events';
 import { AppHeader } from '../components/AppHeader';
 import { BRAND } from '../components/Logo';
 import { useLanguage } from '../store/language-context';
+import { router } from 'expo-router';
 
 function pad(n: number) {
   return String(n).padStart(2, '0');
@@ -103,27 +104,41 @@ export default function CatalogScreen() {
     const place = [item.venueName, item.city].filter(Boolean).join(', ');
 
     return (
-      <View style={styles.card}>
-        <View style={styles.dateBox}>
-          <Text style={styles.dateDay}>{valid ? d.getDate() : '–'}</Text>
-          <Text style={styles.dateMonth}>{valid ? t.months[d.getMonth()] : ''}</Text>
-        </View>
-        <View style={styles.cardBody}>
-          <Text style={styles.cardTitle} numberOfLines={2}>
-            {item.title}
-          </Text>
-          {valid ? (
-            <Text style={styles.cardMeta}>
-              {t.days[d.getDay()]} {pad(d.getHours())}:{pad(d.getMinutes())}
+      <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${item.title}`}
+      onPress={() => router.push(`../catalog/${item.id}`)}
+      style={styles.card}
+    >
+      {({ pressed }) => (
+        <View style={[styles.row, pressed && styles.cardPressed]}>
+          {/* LEFT: DATE */}
+          <View style={styles.dateBox}>
+            <Text style={styles.dateDay}>{valid ? pad(d.getDate()) : '–'}</Text>
+            <Text style={styles.dateMonth}>{valid ? t.months[d.getMonth()] : ''}</Text>
+          </View>
+
+          {/* RIGHT: EVENT DETAILS */}
+          <View style={styles.cardBody}>
+            <Text style={styles.cardTitle} numberOfLines={2}>
+              {item.title}
             </Text>
-          ) : null}
-          {place ? (
-            <Text style={styles.cardMeta} numberOfLines={1}>
-              {place}
-            </Text>
-          ) : null}
+
+            {valid && (
+              <Text style={styles.cardMeta}>
+                {t.days[d.getDay()]} · {pad(d.getHours())}:{pad(d.getMinutes())}
+              </Text>
+            )}
+
+            {!!place && (
+              <Text style={styles.cardMeta} numberOfLines={2}>
+                {place}
+              </Text>
+            )}
+          </View>
         </View>
-      </View>
+      )}
+    </Pressable>
     );
   }
 
@@ -202,28 +217,73 @@ const styles = StyleSheet.create({
     color: '#111827',
   },
 
-  card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 12,
-  },
-  dateBox: {
-    width: 60,
-    height: 64,
-    borderRadius: 14,
-    backgroundColor: '#e8f3ec',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
-  },
-  dateDay: { fontSize: 22, fontWeight: '800', color: '#166534' },
-  dateMonth: { fontSize: 11, fontWeight: '800', color: '#166534', marginTop: 1 },
-  cardBody: { flex: 1 },
-  cardTitle: { fontSize: 17, fontWeight: '700', color: '#111827', marginBottom: 4 },
-  cardMeta: { fontSize: 14, color: '#6b7280', marginTop: 2 },
+card: {
+  backgroundColor: '#FFFFFF',
+  borderRadius: 16,
+  marginBottom: 14,
+  borderWidth: 1,
+  borderColor: '#E5E7EB',
+  overflow: 'hidden',
+  elevation: 3,
+  shadowColor: '#000000',
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.08,
+  shadowRadius: 5,
+},
+
+row: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  minHeight: 110,
+  padding: 16,
+},
+
+cardPressed: {
+  backgroundColor: '#F9FAFB',
+},
+
+dateBox: {
+  width: 66,
+  height: 70,
+  flexShrink: 0,
+  borderRadius: 12,
+  backgroundColor: '#E8F3EC',
+  alignItems: 'center',
+  justifyContent: 'center',
+  marginRight: 16,
+},
+
+dateDay: {
+  fontSize: 24,
+  fontWeight: '800',
+  color: '#166534',
+},
+
+dateMonth: {
+  fontSize: 11,
+  fontWeight: '800',
+  color: '#166534',
+  marginTop: 2,
+},
+
+cardBody: {
+  flex: 1,
+  minWidth: 0,
+  justifyContent: 'center',
+},
+
+cardTitle: {
+  fontSize: 17,
+  fontWeight: '700',
+  color: '#111827',
+  marginBottom: 5,
+},
+
+cardMeta: {
+  fontSize: 14,
+  color: '#6B7280',
+  marginTop: 3,
+},
 
   emptyBox: { alignItems: 'center', marginTop: 40, gap: 12 },
   emptyText: { fontSize: 15, color: '#6b7280', textAlign: 'center' },

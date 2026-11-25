@@ -217,6 +217,10 @@ interface CatalogEventDto {
   city: string | null;
   timezone: string;
   capacity: number | null;
+  description?: string | null;
+  category?: string | null;
+  registration_ends_at?: string | null;
+  venue_address?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -229,6 +233,10 @@ export interface CatalogEvent {
   venueName?: string;
   city?: string;
   timezone: string;
+  description?: string;
+  category?: string;
+  registrationEndsAt?: string;
+  venueAddress?: string;
 }
 
 export async function getCatalogEvents(): Promise<CatalogEvent[]> {
@@ -249,6 +257,10 @@ export async function getCatalogEvents(): Promise<CatalogEvent[]> {
         venueName: e.venue_name ?? undefined,
         city: e.city ?? undefined,
         timezone: e.timezone,
+        description: e.description ?? undefined,
+        category: e.category ?? undefined,
+        registrationEndsAt: e.registration_ends_at ?? undefined,
+        venueAddress: e.venue_address ?? undefined,
       }))
     );
 

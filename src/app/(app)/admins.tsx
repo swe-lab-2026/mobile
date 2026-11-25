@@ -10,6 +10,7 @@ import {
   Notice,
   Page,
 } from '../../components/organizer-ui';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -117,6 +118,7 @@ export default function AdminsScreen() {
   }
 
   return (
+    <SafeAreaView className="flex-1 bg-slate-50" edges={['top', 'bottom']}>
     <Page
       title="Event administrators"
       subtitle="People allowed to manage check-in for this event"
@@ -162,5 +164,6 @@ export default function AdminsScreen() {
         />
       </View>
     </Page>
+    </SafeAreaView>
   );
 }
