@@ -208,17 +208,23 @@ export function useTx() {
   return {
     tx: ALL[lang],
     lang,
-    formatDateTime(value?: string | null) {
+    /** Formats an instant; pass the event timezone to show venue-local time. */
+    formatDateTime(value?: string | null, timeZone?: string) {
       if (!value) return '';
       const d = new Date(value);
       if (isNaN(d.getTime())) return '';
-      return d.toLocaleString(LOCALES[lang], {
+      const options: Intl.DateTimeFormatOptions = {
         day: 'numeric',
         month: 'short',
         year: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
-      });
+      };
+      try {
+        return d.toLocaleString(LOCALES[lang], timeZone ? { ...options, timeZone } : options);
+      } catch {
+        return d.toLocaleString(LOCALES[lang], options);
+      }
     },
   };
 }

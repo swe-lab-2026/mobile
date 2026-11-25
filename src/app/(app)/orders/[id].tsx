@@ -16,18 +16,29 @@ export default function OrderDetailScreen() {
 
   useEffect(() => {
     if (!id) return;
+    let active = true;
     getOrder(id)
-      .then(setOrder)
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        if (active) setOrder(data);
+      })
+      .catch(() => {
+        if (active) setError(true);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [id]);
 
   const back = () => (router.canGoBack() ? router.back() : router.replace('/orders'));
 
-  if (loading || error || !order) {
+  // A missing route param is an error, not an endless spinner.
+  if (!id || loading || error || !order) {
     return (
       <Screen backLabel={tx.backToOrders} onBack={back}>
-        {loading ? (
+        {id && loading ? (
           <ActivityIndicator size="large" color={colors.brand} style={{ marginTop: 40 }} />
         ) : (
           <Card>
@@ -40,7 +51,7 @@ export default function OrderDetailScreen() {
 
   const paid = order.status === 'PAID';
   const money = (n: number) => (n === 0 ? tx.free : `${n} ${order.currency}`);
-  const eventMeta = [formatDateTime(order.eventStartsAt), order.eventPlace].filter(Boolean).join(' · ');
+  const eventMeta = [formatDateTime(order.eventStartsAt, order.eventTimeZone), order.eventPlace].filter(Boolean).join(' · ');
 
   return (
     <Screen backLabel={tx.backToOrders} onBack={back}>
@@ -67,7 +78,7 @@ export default function OrderDetailScreen() {
 
         <View style={styles.divider} />
         <Text style={styles.label}>{tx.eventLabel}</Text>
-        <Text style={styles.eventTitle}>{order.eventTitle}</Text>
+        <Text style={styles.eventTitle}>{order.eventTitle || '—'}</Text>
         {eventMeta ? <Text style={styles.muted}>{eventMeta}</Text> : null}
 
         {order.lines.length > 0 ? (
@@ -108,7 +119,7 @@ export default function OrderDetailScreen() {
 
           <View style={styles.row}>
             <Text style={styles.eventTitle} numberOfLines={2}>
-              {t.typeName ?? order.eventTitle}
+              {t.typeName ?? (order.eventTitle || tx.ticketsLabel)}
             </Text>
             <Badge text={tx.ticketStatus[t.status] ?? t.status} tone={statusTone(t.status)} />
           </View>

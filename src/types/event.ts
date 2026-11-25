@@ -7,15 +7,14 @@ export interface AssignedEvent {
   status?: string;
   timezone?: string;
   /**
-   * Whether the current user may reverse check-ins, when the API reports it.
-   * Undefined means the API did not say; callers fall back to owner/platform-admin checks.
+   * Whether the current user may reverse check-ins for this event, as reported
+   * by GET /events/assigned (owner, PLATFORM_ADMIN or EVENT_ADMIN). The
+   * reversal endpoint enforces the same rule server-side.
    */
-  canReverseCheckIn?: boolean;
+  canReverseCheckIn: boolean;
 }
 
-export interface EventDetails extends AssignedEvent {
-  organizer?: string;
-}
+export type EventDetails = AssignedEvent;
 
 export interface AttendanceStats {
   totalRegistered: number;
@@ -43,6 +42,7 @@ export interface EventTicket {
 export interface CheckedInTicket {
   ticketId: string;
   publicId: string;
+  eventId?: string;
   attendeeName: string | null;
   attendeeEmail: string;
   ticketType: string;

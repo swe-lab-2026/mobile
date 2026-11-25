@@ -91,30 +91,60 @@ event and check-in permissions.
 - Manual ticket search through `GET /api/v1/events/{event_id}/tickets/search`
 - Manual check-in and reversal through the ticket `public_id` endpoints
 
+`GET /api/v1/events/assigned` is the single source of events in the app (it
+already includes events the user owns), so every listed event can be opened and
+scanned. Event details, the scanner and the participant screen re-check it on
+every focus, so a revoked assignment is noticed immediately. Owner-only
+management (edit, ticket types, administrators, publish, duplicate, cancel) is
+shown only when `GET /api/v1/events/{id}` succeeds, which the backend allows only
+for the owner or a platform admin; admission staff never see those actions.
+
 The participant screen is intentionally search-first: the backend requires a
-non-empty search term to list tickets for event staff. It does not fabricate an
-attendee list. Reversal is checked by the server, and a `403` response is shown
-to the user. The Undo (reverse check-in) action follows the caller-specific
+non-empty search term to list tickets for event staff (owners have a separate
+attendee export that is not part of the admission workflow). Search is
+server-side, debounced, paginated (50 per page, "Load more"/infinite scroll, no
+result cap) and drops out-of-order responses. "Show/Hide details" only masks or
+reveals names and emails on screen.
+
+The Undo (reverse check-in) action follows the caller-specific
 `can_reverse_check_in` flag from `GET /api/v1/events/assigned` (true for the event
 owner, `PLATFORM_ADMIN` and assigned `EVENT_ADMIN`; false for `CHECK_IN_STAFF`).
-The backend still authorizes every reversal request. Against an older backend
-without the flag, the app falls back to showing Undo only to owners and platform
-admins.
+If the flag is missing, Undo stays hidden. The backend still authorizes every
+reversal request, and a confirmation is required first.
 
 Admission results are mapped from `error.details.admission_status`, so the
 scanner and manual admission show distinct messages for admitted, invalid QR,
-Campaign QR, wrong event, cancelled, refunded and already-used tickets. Network
-failures keep the scanned payload so the same check-in can be retried.
+ticket not found, Campaign QR, wrong event, cancelled, refunded, already-used
+(with the original check-in time), permission, timeout, network and server
+errors. The scanner runs the camera only while focused, allows one request at a
+time, ignores the code that was just handled for a few seconds after "Scan next",
+and offers a Retry for transient failures that cannot run concurrently.
 
-The event detail screen reloads the event and attendance counters every time it
-regains focus (for example after scanning), and shows a terminal state with a
-retry action when the event is missing, access was revoked, or the API fails.
+**Lost responses.** Requests time out after 15 s and are never retried
+automatically. If a check-in times out or the connection drops, the outcome is
+unknown (the server may have recorded it). The scanner says so and offers Retry;
+if the retry answers "already checked in" with a check-in time from around the
+first attempt, the app shows "Check-in already recorded" rather than a duplicate
+warning.
+
+Attendance counters come only from `GET .../tickets/stats` and are never derived
+from search results. They refresh on focus, after manual check-in and reversal,
+on pull-to-refresh and via the Refresh link. When a refresh fails, the last
+values stay visible with an explicit "could not refresh" notice.
+
+## Localization
+
+Russian (default), Kazakh and English cover the admission workflow, auth screens
+and organizer management. The chosen language is persisted (SecureStore on
+native, `localStorage` on web) and restored on launch. Event dates and times are
+shown in the event's own timezone.
 
 ## Checks
 
 ```bash
 npm run typecheck              # tsc --noEmit
 npm run lint                   # expo lint
+npm test                       # jest (jest-expo preset), src/__tests__
 npm run doctor                 # expo-doctor
 EXPO_PUBLIC_API_BASE_URL=https://api.example.com/api/v1 npm run export:android
 EXPO_PUBLIC_API_BASE_URL=https://api.example.com/api/v1 npm run export:ios
@@ -123,7 +153,7 @@ EXPO_PUBLIC_API_BASE_URL=https://api.example.com/api/v1 npm run export:ios
 Expo type declarations come from `"types": ["expo/types"]` in `tsconfig.json`,
 so `npm run typecheck` works from a clean checkout without the generated
 `expo-env.d.ts`. `npm run doctor` runs `expo-doctor` through `npx` (it is not a
-project dependency). `npm run check` runs typecheck, lint and doctor. The same steps, plus a clean
+project dependency). `npm run check` runs typecheck, lint, tests and doctor. The same steps, plus a clean
 `npm ci` and both platform exports, run in `.github/workflows/mobile-checks.yml`.
 
 ## Learn more

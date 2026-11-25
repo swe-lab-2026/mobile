@@ -11,42 +11,49 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { describeError } from '../../api/errors';
 import { getAssignedEvents } from '../../api/events';
-import { organizerEvents } from '../../api/organizer';
 import { AppHeader } from '../../components/AppHeader';
 import { colors, shadow } from '../../constants/theme';
 import { useLanguage } from '../../store/language-context';
 import { useSelectedEvent } from '../../store/selected-event-context';
 import { AssignedEvent } from '../../types/event';
 
-function pad(n: number) {
-  return String(n).padStart(2, '0');
+/** Day, month index, weekday and HH:MM of an instant in the event's timezone. */
+function zonedParts(iso: string, timeZone?: string) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return {
+      day: Number(get('day')),
+      month: Number(get('month')) - 1,
+      weekday: weekdays.indexOf(get('weekday')),
+      time: `${get('hour')}:${get('minute')}`,
+    };
+  } catch {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return {
+      day: d.getDate(),
+      month: d.getMonth(),
+      weekday: d.getDay(),
+      time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    };
+  }
 }
 
 const STATUS_FILTERS = ['ALL', 'DRAFT', 'PUBLISHED', 'UNPUBLISHED', 'COMPLETED', 'CANCELLED'];
-
-// Organizer-owned events plus events the user is assigned to as an admin.
-// Owned events win on duplicates because they carry the real status.
-async function loadAllEvents(): Promise<AssignedEvent[]> {
-  const [owned, assigned] = await Promise.all([
-    organizerEvents.list().catch(() => []),
-    getAssignedEvents(),
-  ]);
-  const byId = new Map<string, AssignedEvent>();
-  for (const e of assigned) byId.set(e.id, e);
-  for (const e of owned) {
-    byId.set(e.id, {
-      id: e.id,
-      name: e.title,
-      startsAt: e.starts_at,
-      endsAt: e.ends_at ?? undefined,
-      location: e.venue_name ?? undefined,
-      status: e.status,
-      timezone: e.timezone ?? undefined,
-    });
-  }
-  return [...byId.values()];
-}
 
 export default function EventsListScreen() {
   const { t } = useLanguage();
@@ -55,30 +62,32 @@ export default function EventsListScreen() {
   const [events, setEvents] = useState<AssignedEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('ALL');
 
+  // /events/assigned is the single source: it already includes owned events,
+  // so every listed event can be opened and scanned.
   const load = useCallback(async () => {
     try {
-      setEvents(await loadAllEvents());
-      setError(false);
-    } catch {
-      setError(true);
+      setEvents(await getAssignedEvents());
+      setError(null);
+    } catch (e) {
+      setError(describeError(e, t));
     }
-  }, []);
+  }, [t]);
 
   // Reload whenever the screen regains focus (e.g. after creating an event).
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      loadAllEvents()
+      getAssignedEvents()
         .then((data) => {
           if (!active) return;
           setEvents(data);
-          setError(false);
+          setError(null);
         })
-        .catch(() => {
-          if (active) setError(true);
+        .catch((e) => {
+          if (active) setError(describeError(e, t));
         })
         .finally(() => {
           if (active) setLoading(false);
@@ -87,7 +96,7 @@ export default function EventsListScreen() {
       return () => {
         active = false;
       };
-    }, []),
+    }, [t]),
   );
 
   const visibleEvents = filter === 'ALL' ? events : events.filter((e) => e.status === filter);
@@ -110,23 +119,23 @@ export default function EventsListScreen() {
   }
 
   function renderItem({ item }: { item: AssignedEvent }) {
-    const d = new Date(item.startsAt);
-    const valid = !isNaN(d.getTime());
+    const parts = zonedParts(item.startsAt, item.timezone);
 
     return (
       <TouchableOpacity activeOpacity={0.8} onPress={() => openEvent(item.id)} style={styles.card}>
         <View style={styles.dateBox}>
-          <Text style={styles.dateDay}>{valid ? d.getDate() : '–'}</Text>
-          <Text style={styles.dateMonth}>{valid ? t.months[d.getMonth()] : ''}</Text>
+          <Text style={styles.dateDay}>{parts ? parts.day : '–'}</Text>
+          <Text style={styles.dateMonth}>{parts ? t.months[parts.month] : ''}</Text>
         </View>
 
         <View style={styles.cardBody}>
           <Text style={styles.cardTitle} numberOfLines={2}>
             {item.name}
           </Text>
-          {valid ? (
+          {parts ? (
             <Text style={styles.cardMeta}>
-              {t.days[d.getDay()]} {pad(d.getHours())}:{pad(d.getMinutes())}
+              {parts.weekday >= 0 ? `${t.days[parts.weekday]} ` : ''}
+              {parts.time}
             </Text>
           ) : null}
           {item.location ? (
@@ -134,7 +143,9 @@ export default function EventsListScreen() {
               {item.location}
             </Text>
           ) : null}
-          {item.status ? <Text style={styles.statusBadge}>{item.status}</Text> : null}
+          {item.status ? (
+            <Text style={styles.statusBadge}>{t.eventStatus[item.status] ?? item.status}</Text>
+          ) : null}
         </View>
 
         <Text style={styles.arrow}>›</Text>
@@ -165,7 +176,7 @@ export default function EventsListScreen() {
               <Text style={styles.title}>{t.navMyEvents}</Text>
               <Text style={styles.subtitle}>{t.myEventsSubtitle}</Text>
               {error && events.length > 0 ? (
-                <Text style={styles.errorNote}>{t.error}</Text>
+                <Text style={styles.errorNote}>{error}</Text>
               ) : null}
 
               <TouchableOpacity
@@ -186,7 +197,7 @@ export default function EventsListScreen() {
                     onPress={() => setFilter(f)}
                     style={[styles.filterChip, filter === f && styles.filterChipActive]}>
                     <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-                      {f === 'ALL' ? t.all : f}
+                      {f === 'ALL' ? t.all : t.eventStatus[f] ?? f}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -195,7 +206,7 @@ export default function EventsListScreen() {
           }
           ListEmptyComponent={
             <View style={styles.emptyBox}>
-              <Text style={styles.emptyText}>{error ? t.error : t.empty}</Text>
+              <Text style={styles.emptyText}>{error ?? t.empty}</Text>
               {error ? (
                 <TouchableOpacity activeOpacity={0.8} onPress={retry} style={styles.retryButton}>
                   <Text style={styles.retryText}>{t.retry}</Text>

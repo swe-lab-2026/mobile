@@ -1,21 +1,72 @@
 import { ApiError, apiRequest } from './client';
 
-function toArray(body: any): any[] {
-  if (Array.isArray(body)) return body;
-  const inner = body?.data ?? body;
-  if (Array.isArray(inner)) return inner;
-  return inner?.items ?? inner?.results ?? [];
+// ---- Backend DTOs (app/schemas/orders.py, tickets.py, users.py, organizers.py) ----
+
+interface OrderItemDto {
+  ticket_type_id: string;
+  ticket_type_name: string;
+  quantity: number;
+  unit_price: string;
+  subtotal: string;
+  final_price: string;
 }
+
+interface OrderTicketDto {
+  ticket_id: string;
+  public_id: string;
+  order_id: string;
+  event_title: string;
+  event_starts_at: string;
+  venue_name: string | null;
+  city: string | null;
+  timezone: string;
+  ticket_type_name: string;
+  attendee_name: string | null;
+  status: string;
+  qr_payload: string;
+}
+
+export interface OrderDto {
+  id: string;
+  order_id: string;
+  order_number: number;
+  event_id: string;
+  status: string;
+  currency: string;
+  total_amount: string;
+  created_at: string;
+  paid_at: string | null;
+  items: OrderItemDto[];
+  tickets: OrderTicketDto[];
+}
+
+interface UserDto {
+  first_name: string;
+  last_name: string;
+  email: string;
+  email_verified_at: string | null;
+}
+
+interface OrganizerDto {
+  display_name: string;
+  legal_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  verification_status: string;
+}
+
+// ---- App models ----
 
 export interface OrderSummary {
   id: string;
   number?: string;
+  /** Empty when the order has no issued tickets yet (e.g. pending payment). */
   eventTitle: string;
   createdAt?: string;
   status: string;
   total: number;
   currency: string;
-  ticketCount?: number;
+  ticketCount: number;
 }
 
 export interface OrderLine {
@@ -34,63 +85,65 @@ export interface OrderTicket {
 
 export interface OrderDetail extends OrderSummary {
   eventStartsAt?: string;
+  eventTimeZone?: string;
   eventPlace?: string;
   lines: OrderLine[];
   tickets: OrderTicket[];
 }
 
-function toOrderSummary(o: any): OrderSummary {
+export function toOrderSummary(o: OrderDto): OrderSummary {
+  const tickets = o.tickets ?? [];
+  const items = o.items ?? [];
   return {
     id: String(o.id ?? o.order_id),
     number: o.order_number != null ? String(o.order_number) : undefined,
-    eventTitle: o.event_title ?? o.event?.title ?? '',
-    createdAt: o.created_at ?? o.paid_at,
-    status: o.status ?? 'PENDING',
-    total: Number(o.total_amount ?? o.total ?? o.amount ?? 0),
-    currency: o.currency ?? 'KZT',
-    ticketCount: o.ticket_count ?? o.tickets_count ?? o.items?.length ?? o.quantity,
+    // OrderResponse has no event title; every issued ticket carries it.
+    eventTitle: tickets[0]?.event_title ?? '',
+    createdAt: o.created_at ?? o.paid_at ?? undefined,
+    status: o.status,
+    total: Number(o.total_amount),
+    currency: o.currency,
+    ticketCount: tickets.length || items.reduce((sum, item) => sum + item.quantity, 0),
   };
 }
 
-function toTicket(t: any): OrderTicket {
+function toTicket(t: OrderTicketDto): OrderTicket {
   return {
-    id: String(t.ticket_id ?? t.public_id ?? t.id),
-    typeName: t.ticket_type_name ?? t.ticket_type,
-    attendeeName:
-      t.attendee_name ?? ([t.first_name, t.last_name].filter(Boolean).join(' ') || undefined),
-    status: t.status ?? 'VALID',
-    qrPayload: t.qr_payload ?? t.qr_token ?? t.qr_code ?? t.qr ?? t.public_id,
+    // public_id is the identifier staff can search by at the venue.
+    id: t.public_id,
+    typeName: t.ticket_type_name,
+    attendeeName: t.attendee_name ?? undefined,
+    status: t.status,
+    qrPayload: t.qr_payload,
+  };
+}
+
+export function toOrderDetail(o: OrderDto): OrderDetail {
+  const first = o.tickets?.[0];
+  return {
+    ...toOrderSummary(o),
+    eventStartsAt: first?.event_starts_at,
+    eventTimeZone: first?.timezone,
+    eventPlace: first ? [first.venue_name, first.city].filter(Boolean).join(', ') || undefined : undefined,
+    lines: (o.items ?? []).map((i) => ({
+      name: i.ticket_type_name,
+      quantity: i.quantity,
+      total: Number(i.final_price ?? i.subtotal),
+    })),
+    tickets: (o.tickets ?? []).map(toTicket),
   };
 }
 
 export async function getOrders(): Promise<OrderSummary[]> {
-  const body = await apiRequest<unknown>('/orders?limit=100&offset=0');
-  return toArray(body)
+  const rows = await apiRequest<OrderDto[]>('/orders?limit=200&offset=0');
+  return rows
     .map(toOrderSummary)
     .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')); // newest first
 }
 
 export async function getOrder(orderId: string): Promise<OrderDetail> {
-  const [orderBody, ticketsBody] = await Promise.all([
-    apiRequest<any>(`/orders/${orderId}`),
-    apiRequest<unknown>(`/orders/${orderId}/tickets`).catch(() => []),
-  ]);
-  const o = orderBody?.data ?? orderBody;
-  const event = o.event ?? {};
-
-  return {
-    ...toOrderSummary(o),
-    eventStartsAt: event.starts_at ?? o.event_starts_at,
-    eventPlace:
-      [event.venue_name ?? o.venue_name, event.city ?? o.city].filter(Boolean).join(', ') ||
-      undefined,
-    lines: (o.items ?? o.lines ?? []).map((i: any) => ({
-      name: i.ticket_type_name ?? i.name ?? '',
-      quantity: Number(i.quantity ?? 1),
-      total: Number(i.total_amount ?? i.total ?? i.unit_price ?? 0),
-    })),
-    tickets: toArray(ticketsBody).map(toTicket),
-  };
+  const order = await apiRequest<OrderDto>(`/orders/${encodeURIComponent(orderId)}`);
+  return toOrderDetail(order);
 }
 
 export interface Me {
@@ -101,23 +154,21 @@ export interface Me {
 }
 
 export async function getMe(): Promise<Me> {
-  const body = await apiRequest<any>('/users/me');
-  const u = body?.data ?? body;
+  const u = await apiRequest<UserDto>('/users/me');
   return {
     firstName: u.first_name ?? '',
     lastName: u.last_name ?? '',
     email: u.email ?? '',
-    verified: Boolean(u.email_verified ?? u.email_verified_at),
+    verified: Boolean(u.email_verified_at),
   };
 }
 
 export function updateMe(input: { firstName: string; lastName: string }) {
-  return apiRequest<unknown>('/users/me', {
+  return apiRequest<UserDto>('/users/me', {
     method: 'PATCH',
     body: JSON.stringify({ first_name: input.firstName, last_name: input.lastName }),
   });
 }
-
 
 export interface Organizer {
   displayName: string;
@@ -129,8 +180,7 @@ export interface Organizer {
 
 export async function getOrganizer(): Promise<Organizer | null> {
   try {
-    const body = await apiRequest<any>('/organizers/me');
-    const o = body?.data ?? body;
+    const o = await apiRequest<OrganizerDto>('/organizers/me');
     return {
       displayName: o.display_name ?? '',
       legalName: o.legal_name ?? '',
@@ -155,7 +205,7 @@ export function saveOrganizer(
     contact_phone: input.contactPhone || null,
   };
   if (!exists) body.terms_accepted = true;
-  return apiRequest<unknown>('/organizers/me', {
+  return apiRequest<OrganizerDto>('/organizers/me', {
     method: exists ? 'PATCH' : 'POST',
     body: JSON.stringify(body),
   });

@@ -21,20 +21,20 @@ function Hamburger() {
 export function AppHeader() {
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
-  const auth: any = useAuth();
+  const auth = useAuth();
   const { t } = useLanguage();
   const [headerHeight, setHeaderHeight] = useState(62);
   const [menuOpen, setMenuOpen] = useState(false);
-  const user = auth.user ?? null;
-  const loggedIn = Boolean(user || auth.isAuthenticated || auth.accessToken || auth.token);
-  const fullName = [user?.first_name ?? user?.firstName, user?.last_name ?? user?.lastName]
+  const user = auth.user;
+  const loggedIn = auth.isAuthenticated;
+  const fullName = [user?.firstName, user?.lastName]
     .filter(Boolean)
     .join(' ');
   const initials = (
     fullName
       .split(' ')
       .filter(Boolean)
-      .map((p: string) => p[0])
+      .map((p) => p[0])
       .join('')
       .slice(0, 2) || (user?.email ?? '?').slice(0, 2)
   ).toUpperCase();
@@ -62,7 +62,8 @@ export function AppHeader() {
   async function handleLogout() {
     setMenuOpen(false);
     await auth.logout();
-    setTimeout(() => router.replace('/'), 250);
+    // Reset navigation so no protected screen stays in history after logout.
+    setTimeout(() => router.replace('/login'), 250);
   }
 
   return (

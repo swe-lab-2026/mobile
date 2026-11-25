@@ -12,9 +12,10 @@ import {
 import DateTimePicker, {
   DateTimePickerAndroid,
 } from '@react-native-community/datetimepicker';
-import { ApiError } from '../api/client';
 import { organizerEvents } from '../api/organizer';
 import type { EventPayload, EventRecord, EventVisibility } from '../api/organizer';
+import { describeError } from '../api/errors';
+import { Ox, useOx, wallTimeLabel } from '../store/organizer-texts';
 import { Action, Busy, Card, Field, Notice, Page } from './organizer-ui';
 
 type ImageDraft = { object_key: string; alt_text: string };
@@ -68,23 +69,7 @@ const CATEGORIES = [
   'conference',
   'other',
 ];
-const VISIBILITIES: Choice[] = [
-  {
-    value: 'PUBLIC',
-    label: 'Public',
-    description: 'Anyone can discover this event in the public catalog.',
-  },
-  {
-    value: 'UNLISTED',
-    label: 'Unlisted',
-    description: 'People can access the event with its direct link.',
-  },
-  {
-    value: 'PRIVATE',
-    label: 'Private',
-    description: 'Keep the event private and restrict public discovery.',
-  },
-];
+const VISIBILITIES: EventVisibility[] = ['PUBLIC', 'UNLISTED', 'PRIVATE'];
 
 const blankForm: FormState = {
   title: '',
@@ -194,11 +179,8 @@ function timezoneLabel(timeZone: string) {
   }
 }
 
-function dateLabel(value: string) {
-  if (!value) return 'Select date and time';
-  const [date, time] = value.split('T');
-  const [year, month, day] = date.split('-');
-  return `${day}.${month}.${year} at ${time}`;
+function categoryLabel(category: string, ox: Ox) {
+  return ox.categories[category] ?? category.charAt(0).toUpperCase() + category.slice(1);
 }
 
 function FieldError({ message }: { message?: string }) {
@@ -207,7 +189,9 @@ function FieldError({ message }: { message?: string }) {
 }
 
 export default function EventFormScreen() {
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const id = Array.isArray(params.id) ? params.id[0] : params.id;
+  const { ox, t } = useOx();
   const editing = Boolean(id);
   const [form, setForm] = useState<FormState>(blankForm);
   const [loading, setLoading] = useState(editing);
@@ -254,7 +238,7 @@ export default function EventFormScreen() {
       })
       .catch((err) => {
         if (active) {
-          setError(err instanceof ApiError ? err.message : 'Could not load event.');
+          setError(describeError(err, t));
         }
       })
       .finally(() => {
@@ -263,6 +247,8 @@ export default function EventFormScreen() {
     return () => {
       active = false;
     };
+    // Load once per event id; switching language must not refetch and reset the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   function setText(key: Exclude<keyof FormState, 'visibility' | 'images'>, value: string) {
@@ -305,40 +291,41 @@ export default function EventFormScreen() {
 
   function validate() {
     const next: Record<string, string> = {};
-    if (!form.title.trim()) next.title = 'Event title is required.';
-    if (!form.starts_at) next.starts_at = 'Start date and time are required.';
-    if (!form.ends_at) next.ends_at = 'End date and time are required.';
+    if (!form.title.trim()) next.title = ox.errTitle;
+    if (!form.starts_at) next.starts_at = ox.errStart;
+    if (!form.ends_at) next.ends_at = ox.errEnd;
     if (form.starts_at && form.ends_at && form.ends_at <= form.starts_at) {
-      next.ends_at = 'End date and time must be after the start.';
+      next.ends_at = ox.errEndAfter;
     }
     if (
       form.registration_starts_at &&
       form.registration_ends_at &&
       form.registration_ends_at <= form.registration_starts_at
     ) {
-      next.registration_ends_at = 'Registration end must be after registration start.';
+      next.registration_ends_at = ox.errRegEnd;
     }
     if (form.capacity && !(Number.isInteger(Number(form.capacity)) && Number(form.capacity) > 0)) {
-      next.capacity = 'Capacity must be a positive whole number.';
+      next.capacity = ox.errCapacity;
     }
     if (form.country_code && !/^[A-Za-z]{2}$/.test(form.country_code)) {
-      next.country_code = 'Enter a two-letter country code, for example KZ.';
+      next.country_code = ox.errCountry;
     }
     setFieldErrors(next);
     return Object.keys(next).length === 0;
   }
 
   async function save() {
+    if (saving) return;
     setError('');
     if (!validate()) {
-      setError('Please correct the highlighted fields.');
+      setError(ox.fixFields);
       return;
     }
 
     const startsAt = localInputToIso(form.starts_at, form.timezone);
     const endsAt = localInputToIso(form.ends_at, form.timezone);
     if (!startsAt || !endsAt) {
-      setError('Could not convert the event date and time. Check the selected timezone.');
+      setError(ox.errConvert);
       return;
     }
 
@@ -369,12 +356,17 @@ export default function EventFormScreen() {
 
     setSaving(true);
     try {
-      const result = editing
-        ? await organizerEvents.update(id!, payload)
-        : await organizerEvents.create(payload);
-      router.replace({ pathname: '/events/[id]', params: { id: result.id } });
+      if (editing && id) {
+        await organizerEvents.update(id, payload);
+        // Return to the existing details screen, which reloads on focus.
+        if (router.canGoBack()) router.back();
+        else router.replace({ pathname: '/events/[id]', params: { id } });
+      } else {
+        const created = await organizerEvents.create(payload);
+        router.replace({ pathname: '/events/[id]', params: { id: created.id } });
+      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not save event.');
+      setError(describeError(err, t));
     } finally {
       setSaving(false);
     }
@@ -382,12 +374,12 @@ export default function EventFormScreen() {
 
   function showCategoryPicker() {
     setChoiceModal({
-      title: 'Choose category',
+      title: ox.chooseCategoryTitle,
       options: [
-        { value: '', label: 'No category' },
+        { value: '', label: ox.noCategory },
         ...CATEGORIES.map((category) => ({
           value: category,
-          label: category.charAt(0).toUpperCase() + category.slice(1),
+          label: categoryLabel(category, ox),
         })),
       ],
       onSelect: (value) => setText('category', value),
@@ -396,7 +388,7 @@ export default function EventFormScreen() {
 
   function showTimezonePicker() {
     setChoiceModal({
-      title: 'Choose event timezone',
+      title: ox.chooseTimezone,
       options: TIMEZONES.map((timezone) => ({
         value: timezone,
         label: timezoneLabel(timezone),
@@ -416,8 +408,8 @@ export default function EventFormScreen() {
 
   return (
     <Page
-      title={editing ? 'Edit event' : 'Create event'}
-      subtitle="Add event details, venue, schedule and registration settings"
+      title={editing ? ox.editTitle : ox.createTitle}
+      subtitle={ox.formSubtitle}
     >
       <KeyboardAvoidingView
         className="flex-1"
@@ -431,49 +423,49 @@ export default function EventFormScreen() {
 
           {/* Event basics */}
           <Card>
-            <Text className="mb-4 text-lg font-bold text-slate-900">Event basics</Text>
+            <Text className="mb-4 text-lg font-bold text-slate-900">{ox.basics}</Text>
             <Field
-              label="Event title *"
+              label={ox.eventTitle}
               value={form.title}
               onChangeText={(value) => setText('title', value)}
-              placeholder="Enter your event name"
+              placeholder={ox.eventTitlePh}
               maxLength={200}
             />
             <FieldError message={fieldErrors.title} />
             <Field
-              label="Description"
+              label={ox.description}
               value={form.description}
               onChangeText={(value) => setText('description', value)}
-              placeholder="Describe what attendees can expect"
+              placeholder={ox.descriptionPh}
               multiline
               numberOfLines={5}
               textAlignVertical="top"
               maxLength={10000}
               style={{ minHeight: 112, paddingTop: 12 }}
             />
-            <Text className="mb-1.5 text-sm font-semibold text-slate-700">Category</Text>
+            <Text className="mb-1.5 text-sm font-semibold text-slate-700">{ox.category}</Text>
             <Pressable
               onPress={showCategoryPicker}
               className="mb-4 min-h-12 flex-row items-center justify-between rounded-xl border border-slate-200 bg-white px-3"
             >
               <Text className={form.category ? 'text-base text-slate-900' : 'text-base text-slate-400'}>
-                {form.category
-                  ? form.category.charAt(0).toUpperCase() + form.category.slice(1)
-                  : 'Choose a category'}
+                {form.category ? categoryLabel(form.category, ox) : ox.chooseCategory}
               </Text>
               <Text className="text-slate-500">⌄</Text>
             </Pressable>
 
-            <Text className="mb-2 text-sm font-semibold text-slate-700">Event visibility</Text>
+            <Text className="mb-2 text-sm font-semibold text-slate-700">{ox.visibility}</Text>
             {VISIBILITIES.map((visibility) => {
-              const selected = form.visibility === visibility.value;
+              const selected = form.visibility === visibility;
               return (
                 <Pressable
-                  key={visibility.value}
+                  key={visibility}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected }}
                   onPress={() =>
                     setForm((previous) => ({
                       ...previous,
-                      visibility: visibility.value as EventVisibility,
+                      visibility,
                     }))
                   }
                   className={`mb-2 rounded-xl border p-3 ${
@@ -484,10 +476,10 @@ export default function EventFormScreen() {
                     <View className={`mr-3 h-5 w-5 items-center justify-center rounded-full border ${selected ? 'border-blue-600' : 'border-slate-400'}`}>
                       {selected ? <View className="h-2.5 w-2.5 rounded-full bg-blue-600" /> : null}
                     </View>
-                    <Text className="font-semibold text-slate-900">{visibility.label}</Text>
+                    <Text className="font-semibold text-slate-900">{t.visibilityName[visibility] ?? visibility}</Text>
                   </View>
                   <Text className="ml-8 mt-1 text-xs leading-5 text-slate-500">
-                    {visibility.description}
+                    {ox.visibilityDesc[visibility]}
                   </Text>
                 </Pressable>
               );
@@ -496,30 +488,30 @@ export default function EventFormScreen() {
 
           {/* Venue */}
           <Card>
-            <Text className="mb-4 text-lg font-bold text-slate-900">Venue</Text>
+            <Text className="mb-4 text-lg font-bold text-slate-900">{ox.venue}</Text>
             <Field
-              label="Venue name"
+              label={ox.venueName}
               value={form.venue_name}
               onChangeText={(value) => setText('venue_name', value)}
-              placeholder="Venue or location name"
+              placeholder={ox.venueNamePh}
               maxLength={200}
             />
             <Field
-              label="City"
+              label={ox.city}
               value={form.city}
               onChangeText={(value) => setText('city', value)}
-              placeholder="City"
+              placeholder={ox.city}
               maxLength={120}
             />
             <Field
-              label="Venue address"
+              label={ox.venueAddress}
               value={form.venue_address}
               onChangeText={(value) => setText('venue_address', value)}
-              placeholder="Street, building, room..."
+              placeholder={ox.venueAddressPh}
               maxLength={2000}
             />
             <Field
-              label="Country code"
+              label={ox.countryCode}
               value={form.country_code}
               onChangeText={(value) => setText('country_code', value.toUpperCase())}
               placeholder="KZ"
@@ -531,9 +523,9 @@ export default function EventFormScreen() {
 
           {/* Schedule */}
           <Card>
-            <Text className="mb-2 text-lg font-bold text-slate-900">Schedule</Text>
-            <Text className="mb-2 text-sm text-slate-500">All event times are interpreted in the selected event timezone.</Text>
-            <Text className="mb-1.5 text-sm font-semibold text-slate-700">Timezone</Text>
+            <Text className="mb-2 text-lg font-bold text-slate-900">{ox.schedule}</Text>
+            <Text className="mb-2 text-sm text-slate-500">{ox.scheduleHint}</Text>
+            <Text className="mb-1.5 text-sm font-semibold text-slate-700">{ox.timezone}</Text>
             <Pressable
               onPress={showTimezonePicker}
               className="mb-4 min-h-12 flex-row items-center justify-between rounded-xl border border-slate-200 bg-white px-3"
@@ -543,10 +535,10 @@ export default function EventFormScreen() {
             </Pressable>
 
             {([
-              ['starts_at', 'Event starts *'],
-              ['ends_at', 'Event ends *'],
-              ['registration_starts_at', 'Registration opens (optional)'],
-              ['registration_ends_at', 'Registration closes (optional)'],
+              ['starts_at', ox.startsAt],
+              ['ends_at', ox.endsAt],
+              ['registration_starts_at', ox.regStarts],
+              ['registration_ends_at', ox.regEnds],
             ] as [DateField, string][]).map(([field, label]) => (
               <View key={field} className="mb-3">
                 <Text className="mb-1.5 text-sm font-semibold text-slate-700">{label}</Text>
@@ -555,7 +547,7 @@ export default function EventFormScreen() {
                   className="min-h-12 flex-row items-center justify-between rounded-xl border border-slate-200 bg-white px-3"
                 >
                   <Text className={form[field] ? 'text-base text-slate-900' : 'text-base text-slate-400'}>
-                    {dateLabel(form[field])}
+                    {wallTimeLabel(form[field], ox)}
                   </Text>
                   <Text className="text-lg text-slate-500">▦</Text>
                 </Pressable>
@@ -563,26 +555,26 @@ export default function EventFormScreen() {
               </View>
             ))}
             <Text className="text-xs leading-5 text-slate-500">
-              The selected timezone and its UTC offset will be sent to the backend automatically.
+              {ox.timezoneNote}
             </Text>
           </Card>
 
           {/* Capacity and refund policy */}
           <Card>
-            <Text className="mb-4 text-lg font-bold text-slate-900">Capacity and policies</Text>
+            <Text className="mb-4 text-lg font-bold text-slate-900">{ox.capacityPolicies}</Text>
             <Field
-              label="Capacity (leave empty for unlimited)"
+              label={ox.capacityUnlimited}
               value={form.capacity}
               onChangeText={(value) => setText('capacity', value.replace(/[^0-9]/g, ''))}
-              placeholder="e.g. 250"
+              placeholder="250"
               keyboardType="number-pad"
             />
             <FieldError message={fieldErrors.capacity} />
             <Field
-              label="Refund policy"
+              label={ox.refundPolicy}
               value={form.refund_policy}
               onChangeText={(value) => setText('refund_policy', value)}
-              placeholder="Explain your refund conditions"
+              placeholder={ox.refundPolicyPh}
               multiline
               numberOfLines={4}
               textAlignVertical="top"
@@ -593,14 +585,14 @@ export default function EventFormScreen() {
 
           {/* Event images */}
           <Card>
-            <Text className="mb-1 text-lg font-bold text-slate-900">Event images</Text>
+            <Text className="mb-1 text-lg font-bold text-slate-900">{ox.images}</Text>
             <Text className="mb-4 text-sm leading-5 text-slate-500">
-              Add image URLs or storage object keys. This matches the web form; it does not upload image files from the phone.
+              {ox.imagesHint}
             </Text>
             {form.images.map((image, index) => (
               <View key={`${index}`} className="mb-3 rounded-xl border border-slate-200 p-3">
                 <Field
-                  label={`Image URL or object key ${index + 1}`}
+                  label={`${ox.imageKey} ${index + 1}`}
                   value={image.object_key}
                   onChangeText={(value) =>
                     setForm((previous) => ({
@@ -616,7 +608,7 @@ export default function EventFormScreen() {
                   maxLength={512}
                 />
                 <Field
-                  label="Image alt text"
+                  label={ox.imageAlt}
                   value={image.alt_text}
                   onChangeText={(value) =>
                     setForm((previous) => ({
@@ -626,11 +618,11 @@ export default function EventFormScreen() {
                       ),
                     }))
                   }
-                  placeholder="Short image description"
+                  placeholder={ox.imageAltPh}
                   maxLength={240}
                 />
                 <Action
-                  label="Remove image"
+                  label={ox.removeImage}
                   kind="danger"
                   onPress={() =>
                     setForm((previous) => ({
@@ -641,18 +633,18 @@ export default function EventFormScreen() {
                 />
               </View>
             ))}
-            <Action label="＋ Add image" kind="secondary" onPress={addImage} />
+            <Action label={ox.addImage} kind="secondary" onPress={addImage} />
           </Card>
 
           {/* Form actions */}
           <Action
-            label={saving ? 'Saving...' : editing ? 'Save changes' : 'Create event'}
+            label={editing ? ox.save : ox.createBtn}
             onPress={save}
-            disabled={saving}
+            loading={saving}
           />
-          <Action label="Cancel" kind="secondary" onPress={() => router.back()} />
+          <Action label={ox.cancel} kind="secondary" onPress={() => router.back()} disabled={saving} />
           <Text className="mt-1 text-center text-xs leading-5 text-slate-500">
-            You can manage ticket types and publish the event after creating it.
+            {ox.afterCreateHint}
           </Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -669,7 +661,7 @@ export default function EventFormScreen() {
             <View className="mb-4 flex-row items-center justify-between">
               <Text className="text-lg font-bold text-slate-900">{choiceModal?.title}</Text>
               <Pressable onPress={() => setChoiceModal(null)}>
-                <Text className="px-2 py-1 text-base font-semibold text-blue-600">Close</Text>
+                <Text className="px-2 py-1 text-base font-semibold text-blue-600">{ox.close}</Text>
               </Pressable>
             </View>
             <ScrollView>
@@ -705,10 +697,10 @@ export default function EventFormScreen() {
             <View className="rounded-t-3xl bg-white p-4">
               <View className="mb-2 flex-row items-center justify-between">
                 <Pressable onPress={() => setIosPicker(null)}>
-                  <Text className="px-2 py-2 text-base text-slate-600">Cancel</Text>
+                  <Text className="px-2 py-2 text-base text-slate-600">{ox.cancel}</Text>
                 </Pressable>
                 <Text className="text-base font-semibold text-slate-900">
-                  {iosPicker?.mode === 'date' ? 'Choose date' : 'Choose time'}
+                  {iosPicker?.mode === 'date' ? ox.chooseDate : ox.chooseTime}
                 </Text>
                 <Pressable
                   onPress={() => {
@@ -722,7 +714,7 @@ export default function EventFormScreen() {
                   }}
                 >
                   <Text className="px-2 py-2 text-base font-semibold text-blue-600">
-                    {iosPicker?.mode === 'date' ? 'Next' : 'Done'}
+                    {iosPicker?.mode === 'date' ? ox.next : ox.done}
                   </Text>
                 </Pressable>
               </View>

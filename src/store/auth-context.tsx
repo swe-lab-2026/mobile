@@ -8,9 +8,12 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isPlatformAdmin: boolean;
   isInitializing: boolean;
-  initializationError: string | null;
+  /** True when a stored session could not be restored for a transient reason (e.g. offline). */
+  initializationError: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Re-reads /users/me, e.g. after the profile was edited. */
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -18,7 +21,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
-  const [initializationError, setInitializationError] = useState<string | null>(null);
+  const [initializationError, setInitializationError] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -38,9 +41,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       .catch(() => {
         if (active) {
-          setInitializationError(
-            'Could not restore your previous session. Check your connection and sign in again.',
-          );
+          setInitializationError(true);
         }
       })
       .finally(() => {
@@ -55,7 +56,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    setInitializationError(null);
+    setInitializationError(false);
     const loggedInUser = await authApi.login({ email, password });
     setUser(loggedInUser);
   }, []);
@@ -63,6 +64,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     setUser(null);
     await authApi.logout();
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      setUser(await authApi.getCurrentUser());
+    } catch {
+      // Keep the current user; session errors are handled by the API client.
+    }
   }, []);
 
   const value = useMemo(
@@ -74,8 +83,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       initializationError,
       login,
       logout,
+      refreshUser,
     }),
-    [user, isInitializing, initializationError, login, logout],
+    [user, isInitializing, initializationError, login, logout, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

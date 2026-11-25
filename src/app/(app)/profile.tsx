@@ -10,6 +10,7 @@ import {
 import { authErrorMessage, Field, Notice, PrimaryButton } from '../../components/AuthUI';
 import { Badge, Card, Screen, statusTone } from '../../components/Screen';
 import { colors } from '../../constants/theme';
+import { useAuth } from '../../store/auth-context';
 import { useLanguage } from '../../store/language-context';
 import { useTx } from '../../store/screen-texts';
 
@@ -18,6 +19,7 @@ type Msg = { kind: 'error' | 'info'; text: string } | null;
 export default function ProfileScreen() {
   const { t } = useLanguage();
   const { tx } = useTx();
+  const { refreshUser } = useAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -107,6 +109,8 @@ export default function ProfileScreen() {
     setSavingAccount(true);
     try {
       await updateMe({ firstName: firstName.trim(), lastName: lastName.trim() });
+      // Keep the header/menu name in sync with the saved profile.
+      void refreshUser();
       setAccountMsg({ kind: 'info', text: tx.saved });
     } catch (e) {
       setAccountMsg({ kind: 'error', text: authErrorMessage(e, t) });

@@ -1,100 +1,82 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text } from 'react-native';
+import { describeError } from '../api/errors';
 import { resetPassword } from '../api/registration';
+import { AuthLayout, authStyles, Field, Notice, PrimaryButton } from '../components/AuthUI';
+import { notify } from '../components/dialogs';
+import { useLanguage } from '../store/language-context';
 
 export default function ResetPasswordScreen() {
-  const { email: initialEmail = '' } = useLocalSearchParams<{ email: string }>();
+  const { t } = useLanguage();
+  const params = useLocalSearchParams<{ email?: string | string[] }>();
+  const initialEmail = Array.isArray(params.email) ? params.email[0] : params.email;
 
-  const [email, setEmail] = useState(initialEmail);
+  const [email, setEmail] = useState(initialEmail ?? '');
   const [token, setToken] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const back = () => (router.canGoBack() ? router.back() : router.replace('/login'));
+
   async function submit() {
+    if (busy) return;
     const trimmedEmail = email.trim();
     const trimmedToken = token.trim();
 
     if (!trimmedEmail || !trimmedToken || password.length < 8) {
-      setError('Enter your email, reset code, and a password of at least 8 characters.');
+      setError(t.errResetFields);
       return;
     }
 
     setBusy(true);
-    setError('');
-
+    setError(null);
     try {
       await resetPassword(trimmedEmail, trimmedToken, password);
+      notify(t.successTitle, t.passwordUpdated);
       router.replace('/login');
-    } catch (e: unknown) {
-      const errorMessage =
-        e instanceof Error ? e.message : 'Password reset failed';
-      setError(errorMessage);
+    } catch (e) {
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
   }
 
-  const fields = [
-    {
-      label: 'Email',
-      value: email,
-      onChangeText: setEmail,
-      secureTextEntry: false,
-      keyboardType: 'email-address' as const,
-    },
-    {
-      label: 'Reset code',
-      value: token,
-      onChangeText: setToken,
-      secureTextEntry: false,
-      keyboardType: 'default' as const,
-    },
-    {
-      label: 'New password',
-      value: password,
-      onChangeText: setPassword,
-      secureTextEntry: true,
-      keyboardType: 'default' as const,
-    },
-  ];
-
   return (
-    <SafeAreaView className="flex-1 bg-white">
-      <View className="flex-1 justify-center p-6">
-        <Text className="mb-5 text-center text-2xl font-bold">
-          Choose a new password
-        </Text>
+    <AuthLayout onBack={back}>
+      <Text style={authStyles.title}>{t.newPasswordTitle}</Text>
+      <Text style={authStyles.subtitle}>{t.newPasswordSubtitle}</Text>
 
-        {fields.map(({ label, value, onChangeText, secureTextEntry, keyboardType }) => (
-          <TextInput
-            key={label}
-            className="mb-3 rounded-xl border border-slate-300 p-4"
-            value={value}
-            onChangeText={onChangeText}
-            placeholder={label}
-            secureTextEntry={secureTextEntry}
-            autoCapitalize="none"
-            keyboardType={keyboardType}
-          />
-        ))}
+      <Field
+        label={t.email}
+        value={email}
+        onChangeText={setEmail}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="email-address"
+      />
+      <Field
+        label={t.resetCode}
+        value={token}
+        onChangeText={setToken}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      <Field
+        label={t.newPassword}
+        placeholder="••••••••"
+        value={password}
+        onChangeText={setPassword}
+        secure
+        autoCapitalize="none"
+        autoCorrect={false}
+        onSubmitEditing={submit}
+      />
 
-        {error ? (
-          <Text className="mb-3 text-red-600">{error}</Text>
-        ) : null}
+      {error ? <Notice kind="error" text={error} /> : null}
 
-        <Pressable
-          disabled={busy}
-          onPress={submit}
-          className="items-center rounded-xl bg-blue-600 p-4"
-        >
-          <Text className="font-bold text-white">
-            {busy ? 'Saving…' : 'Update password'}
-          </Text>
-        </Pressable>
-      </View>
-    </SafeAreaView>
+      <PrimaryButton label={t.updatePassword} onPress={submit} loading={busy} />
+    </AuthLayout>
   );
 }

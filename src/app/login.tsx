@@ -2,8 +2,8 @@ import { Redirect, router } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { ApiError } from '../api/client';
+import { describeError } from '../api/errors';
 import {
-  authErrorMessage,
   AuthLayout,
   authStyles,
   Field,
@@ -15,23 +15,6 @@ import {
 import { useAuth } from '../store/auth-context';
 import { useLanguage } from '../store/language-context';
 
-function resolveLoginError(error: unknown, t: ReturnType<typeof useLanguage>['t']): string {
-  if (error instanceof ApiError) {
-    switch (error.code) {
-      case 'INVALID_CREDENTIALS':
-        return 'Invalid email or password.';
-      case 'EMAIL_NOT_VERIFIED':
-        return 'Please verify your email before signing in.';
-      case 'USER_BLOCKED':
-        return 'This account is blocked. Contact support.';
-      case 'TOO_MANY_ATTEMPTS':
-        return 'Too many failed attempts. Please try again later.';
-      case 'NETWORK_ERROR':
-        return 'Cannot reach the server. Check your connection and API URL.';
-    }
-  }
-  return authErrorMessage(error, t);
-}
 
 export default function LoginScreen() {
   const { login, isAuthenticated, isInitializing, initializationError } = useAuth();
@@ -40,7 +23,6 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [notVerified, setNotVerified] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -53,7 +35,6 @@ export default function LoginScreen() {
     if (submitting) return;
 
     setError(null);
-    setStatusMessage(null);
     setNotVerified(false);
 
     if (!email.trim() || !password) {
@@ -64,11 +45,10 @@ export default function LoginScreen() {
     setSubmitting(true);
     try {
       await login(email.trim(), password);
-      setStatusMessage('Logged in');
       router.replace('/events');
     } catch (err) {
-      setNotVerified((err as any)?.code === 'EMAIL_NOT_VERIFIED');
-      setError(resolveLoginError(err, t));
+      setNotVerified(err instanceof ApiError && err.code === 'EMAIL_NOT_VERIFIED');
+      setError(describeError(err, t));
     } finally {
       setSubmitting(false);
     }
@@ -91,7 +71,7 @@ export default function LoginScreen() {
       <Text style={authStyles.title}>{t.loginTitle}</Text>
       <Text style={authStyles.subtitle}>{t.loginSubtitle}</Text>
 
-      {initializationError ? <Notice kind="error" text={initializationError} /> : null}
+      {initializationError ? <Notice kind="error" text={t.errNetwork} /> : null}
 
       <Field
         label={t.email}
@@ -116,7 +96,6 @@ export default function LoginScreen() {
         returnKeyType="go"
       />
 
-      {statusMessage ? <Notice kind="success" text={statusMessage} /> : null}
       {error ? <Notice kind="error" text={error} /> : null}
 
       {notVerified ? (

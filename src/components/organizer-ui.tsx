@@ -7,6 +7,7 @@ import {
   TextInputProps,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export interface PageProps {
   children: React.ReactNode;
@@ -16,7 +17,7 @@ export interface PageProps {
 
 export function Page({ children, title, subtitle }: PageProps) {
   return (
-    <View className="flex-1 bg-slate-50">
+    <SafeAreaView className="flex-1 bg-slate-50" edges={['top']}>
       <View className="px-5 pt-5 pb-3">
         <Text className="text-2xl font-bold text-slate-900">{title}</Text>
         {subtitle ? (
@@ -25,7 +26,7 @@ export function Page({ children, title, subtitle }: PageProps) {
       </View>
 
       <View className="flex-1">{children}</View>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -56,6 +57,8 @@ export interface ActionProps {
   onPress: () => void;
   kind?: ActionKind;
   disabled?: boolean;
+  /** Shows a spinner and blocks presses while an operation runs. */
+  loading?: boolean;
 }
 
 const ACTION_STYLES: Record<ActionKind, { container: string; text: string }> = {
@@ -78,18 +81,26 @@ export function Action({
   onPress,
   kind = 'primary',
   disabled = false,
+  loading = false,
 }: ActionProps) {
   const variant = ACTION_STYLES[kind];
+  const inactive = disabled || loading;
 
   return (
     <Pressable
-      disabled={disabled}
+      disabled={inactive}
       onPress={onPress}
-      className={`mb-2 items-center rounded-xl px-4 py-3 ${variant.container} ${
-        disabled ? 'opacity-50' : ''
+      accessibilityRole="button"
+      accessibilityState={{ disabled: inactive, busy: loading }}
+      className={`mb-2 min-h-12 items-center justify-center rounded-xl px-4 py-3 ${variant.container} ${
+        inactive ? 'opacity-50' : ''
       }`}
     >
-      <Text className={`font-semibold ${variant.text}`}>{label}</Text>
+      {loading ? (
+        <ActivityIndicator color={kind === 'secondary' ? '#1e293b' : '#fff'} />
+      ) : (
+        <Text className={`text-center font-semibold ${variant.text}`}>{label}</Text>
+      )}
     </Pressable>
   );
 }

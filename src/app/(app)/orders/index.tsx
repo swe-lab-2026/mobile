@@ -72,7 +72,7 @@ export default function OrdersScreen() {
           const meta = [
             o.number ? `${tx.orderLabel} №${o.number}` : '',
             formatDateTime(o.createdAt),
-            o.ticketCount != null ? `${tx.ticketsShort}: ${o.ticketCount}` : '',
+            o.ticketCount > 0 ? `${tx.ticketsShort}: ${o.ticketCount}` : '',
           ]
             .filter(Boolean)
             .join(' · ');
@@ -86,7 +86,7 @@ export default function OrdersScreen() {
             >
               <View style={styles.row}>
                 <Text style={styles.eventTitle} numberOfLines={2}>
-                  {o.eventTitle}
+                  {o.eventTitle || tx.eventLabel}
                 </Text>
                 <Badge text={tx.orderStatus[o.status] ?? o.status} tone={statusTone(o.status)} />
               </View>

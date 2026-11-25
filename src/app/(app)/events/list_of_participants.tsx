@@ -1,8 +1,7 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Modal,
   Pressable,
@@ -13,26 +12,35 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { admissionMessage, classifyAdmissionError } from '../../../api/admission';
 import {
-  getEventAttendanceStats,
-  getEventDetails,
+  admissionMessage,
+  classifyAdmissionError,
+  uncertainOutcomeHint,
+} from '../../../api/admission';
+import { classifyApiError } from '../../../api/client';
+import { describeError } from '../../../api/errors';
+import {
+  getAccessibleEvent,
   manualCheckInTicket,
+  mergeTicketPages,
+  replaceTicket,
   reverseCheckInTicket,
   searchEventTickets,
+  SEARCH_PAGE_SIZE,
 } from '../../../api/events';
-import { organizerEvents } from '../../../api/organizer';
 import { authStyles, Notice, PrimaryButton } from '../../../components/AuthUI';
+import { confirmAction, notify } from '../../../components/dialogs';
 import { LanguagePicker } from '../../../components/LanguagePicker';
-import { useAuth } from '../../../store/auth-context';
+import { useAttendanceStats } from '../../../features/use-attendance-stats';
 import { Dict, Lang, useLanguage } from '../../../store/language-context';
-import { AttendanceStats, EventTicket } from '../../../types/event';
+import { AssignedEvent, EventTicket } from '../../../types/event';
 
 const LOCALES: Record<Lang, string> = {
   ru: 'ru-RU',
   kk: 'kk-KZ',
   en: 'en-GB',
 };
+const SEARCH_DEBOUNCE_MS = 400;
 
 function initials(name?: string | null) {
   return (
@@ -61,11 +69,16 @@ function maskEmail(email?: string | null): string {
   return `${visible}${'•'.repeat(Math.max(local.length - 2, 3))}@${domain}`;
 }
 
-function formatCheckInTime(value: string | null | undefined, locale: string) {
+function formatCheckInTime(value: string | null | undefined, locale: string, timeZone?: string) {
   if (!value) return null;
   const date = new Date(value);
   if (isNaN(date.getTime())) return null;
-  return date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+  const options: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+  try {
+    return date.toLocaleTimeString(locale, timeZone ? { ...options, timeZone } : options);
+  } catch {
+    return date.toLocaleTimeString(locale, options);
+  }
 }
 
 function statusLabel(status: string, t: Dict) {
@@ -83,170 +96,204 @@ function statusLabel(status: string, t: Dict) {
   }
 }
 
-function actionErrorMessage(error: unknown, t: Dict): string {
-  return admissionMessage(classifyAdmissionError(error), t);
+type Access =
+  | { kind: 'checking' }
+  | { kind: 'granted'; event: AssignedEvent }
+  | { kind: 'denied' }
+  | { kind: 'error'; message: string };
+
+interface SearchState {
+  query: string;
+  items: EventTicket[];
+  hasMore: boolean;
+  loading: boolean;
+  loadingMore: boolean;
+  error: string | null;
 }
 
-/**
- * UI-side mirror of the backend reversal gate (owner, PLATFORM_ADMIN or
- * EVENT_ADMIN). The backend still enforces it; this only hides Undo from
- * users who would be rejected. Unknown means hidden.
- */
-async function resolveReversalPermission(
-  eventId: string,
-  userId: string | undefined,
-  isPlatformAdmin: boolean,
-): Promise<boolean> {
-  if (isPlatformAdmin) return true;
-  const assigned = await getEventDetails(eventId).catch(() => null);
-  if (typeof assigned?.canReverseCheckIn === 'boolean') return assigned.canReverseCheckIn;
-  const record = await organizerEvents.get(eventId).catch(() => null);
-  return !!record && !!userId && record.owner_user_id === userId;
-}
+const EMPTY_SEARCH: SearchState = {
+  query: '',
+  items: [],
+  hasMore: false,
+  loading: false,
+  loadingMore: false,
+  error: null,
+};
 
 export default function ParticipantsScreen() {
   const insets = useSafeAreaInsets();
   const { t, lang } = useLanguage();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const eventId = Array.isArray(params.id) ? params.id[0] : params.id;
+  const locale = LOCALES[lang];
 
-  const [query, setQuery] = useState('');
-  const [allTickets, setAllTickets] = useState<EventTicket[]>([]);
-  const [listRevealed, setListRevealed] = useState(false);
-  const [stats, setStats] = useState<AttendanceStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [statsError, setStatsError] = useState(false);
+  const [input, setInput] = useState('');
+  const [search, setSearch] = useState<SearchState>(EMPTY_SEARCH);
+  const [detailsRevealed, setDetailsRevealed] = useState(false);
+  const [access, setAccess] = useState<Access>({ kind: 'checking' });
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<EventTicket | null>(null);
   const [busy, setBusy] = useState(false);
-  const [reversal, setReversal] = useState<{ eventId: string; allowed: boolean } | null>(null);
-  const requestId = useRef(0);
-  const { user, isPlatformAdmin } = useAuth();
-  const canReverse = !!eventId && reversal?.eventId === eventId && reversal.allowed;
-  const locale = LOCALES[lang];
+  const busyRef = useRef(false);
+  const stats = useAttendanceStats(eventId);
+  const refreshStats = stats.refresh;
 
-  const loadData = useCallback(
-    async (searchTerm = '') => {
+  // Every search gets a sequence number and its own AbortController, so a
+  // slow response for an old query can never overwrite newer results.
+  const searchSeq = useRef(0);
+  const searchAbort = useRef<AbortController | null>(null);
+  const activeQuery = useRef('');
+
+  const canReverse = access.kind === 'granted' && access.event.canReverseCheckIn;
+  const timeZone = access.kind === 'granted' ? access.event.timezone : undefined;
+
+  const checkAccess = useCallback(async () => {
+    if (!eventId) return;
+    try {
+      const event = await getAccessibleEvent(eventId);
+      setAccess(event ? { kind: 'granted', event } : { kind: 'denied' });
+    } catch (error) {
+      setAccess(
+        classifyApiError(error) === 'forbidden'
+          ? { kind: 'denied' }
+          : { kind: 'error', message: describeError(error, t) },
+      );
+    }
+  }, [eventId, t]);
+
+  const runSearch = useCallback(
+    async (query: string, mode: 'replace' | 'append' = 'replace', offset = 0) => {
       if (!eventId) return;
-      const id = requestId.current + 1;
-      requestId.current = id;
+      const trimmed = query.trim();
+      searchAbort.current?.abort();
+      const seq = ++searchSeq.current;
+      activeQuery.current = trimmed;
 
-      setLoading(true);
-      setLoadError(null);
-
-      const [statsResult, ticketsResult] = await Promise.allSettled([
-        getEventAttendanceStats(eventId),
-        searchEventTickets(eventId, searchTerm.trim()),
-      ]);
-
-      if (requestId.current !== id) return;
-
-      if (statsResult.status === 'fulfilled') {
-        setStats(statsResult.value);
-        setStatsError(false);
-      } else {
-        setStatsError(true);
+      if (!trimmed) {
+        searchAbort.current = null;
+        setSearch(EMPTY_SEARCH);
+        return;
       }
 
-      if (ticketsResult.status === 'fulfilled') {
-        setAllTickets(ticketsResult.value);
-      } else {
-        setAllTickets([]);
-        setLoadError(actionErrorMessage(ticketsResult.reason, t));
-      }
+      const controller = new AbortController();
+      searchAbort.current = controller;
+      setSearch((prev) =>
+        mode === 'append'
+          ? { ...prev, loadingMore: true, error: null }
+          : { ...prev, query: trimmed, loading: true, error: null, ...(prev.query === trimmed ? {} : { items: [], hasMore: false }) },
+      );
 
-      setLoading(false);
+      try {
+        const page = await searchEventTickets(eventId, trimmed, {
+          offset,
+          limit: SEARCH_PAGE_SIZE,
+          signal: controller.signal,
+        });
+        if (seq !== searchSeq.current) return;
+        setSearch((prev) => ({
+          query: trimmed,
+          items: mode === 'append' ? mergeTicketPages(prev.items, page.items) : page.items,
+          hasMore: page.hasMore,
+          loading: false,
+          loadingMore: false,
+          error: null,
+        }));
+      } catch (error) {
+        if (seq !== searchSeq.current) return;
+        if (classifyApiError(error) === 'forbidden') setAccess({ kind: 'denied' });
+        setSearch((prev) => ({
+          ...prev,
+          loading: false,
+          loadingMore: false,
+          error: describeError(error, t),
+        }));
+      }
     },
     [eventId, t],
   );
 
-  // Reload on focus so counts and statuses reflect check-ins made elsewhere (e.g. the scanner).
-  const queryRef = useRef('');
-  useFocusEffect(
-    useCallback(() => {
-      void loadData(queryRef.current);
-    }, [loadData]),
-  );
+  // Debounced server-side search while typing.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      if (input.trim() !== activeQuery.current) void runSearch(input);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [input, runSearch]);
 
-  const userId = user?.userId;
+  // On focus: re-check access, refresh authoritative stats, and re-run the
+  // current search so statuses reflect check-ins made elsewhere (e.g. scanner).
   useFocusEffect(
     useCallback(() => {
-      if (!eventId) return;
-      let active = true;
-      void resolveReversalPermission(eventId, userId, isPlatformAdmin).then((allowed) => {
-        if (active) setReversal({ eventId, allowed });
-      });
+      void checkAccess();
+      void refreshStats();
+      if (activeQuery.current) void runSearch(activeQuery.current);
       return () => {
-        active = false;
+        searchAbort.current?.abort();
+        searchSeq.current += 1;
       };
-    }, [eventId, userId, isPlatformAdmin]),
+    }, [checkAccess, refreshStats, runSearch]),
   );
-
-  const filteredTickets = useMemo(() => {
-    const trimmed = query.trim().toLowerCase();
-    if (!trimmed) return allTickets;
-    return allTickets.filter((item) => {
-      const name = item.attendeeName?.toLowerCase() ?? '';
-      const email = item.attendeeEmail?.toLowerCase() ?? '';
-      const order = String(item.orderNumber ?? '');
-      const publicId = item.publicId?.toLowerCase() ?? '';
-      return (
-        name.includes(trimmed) ||
-        email.includes(trimmed) ||
-        order.includes(trimmed) ||
-        publicId.includes(trimmed)
-      );
-    });
-  }, [allTickets, query]);
 
   async function onRefresh() {
     setRefreshing(true);
-    await loadData(query);
+    await Promise.all([
+      checkAccess(),
+      refreshStats(),
+      activeQuery.current ? runSearch(activeQuery.current) : Promise.resolve(),
+    ]);
     setRefreshing(false);
   }
 
+  function loadMore() {
+    if (!search.hasMore || search.loading || search.loadingMore || !search.query) return;
+    void runSearch(search.query, 'append', search.items.length);
+  }
+
   async function submitAction(ticket: EventTicket, action: 'check-in' | 'reverse') {
-    if (!eventId || busy) return;
+    // The ref blocks double taps before React re-renders the disabled button.
+    if (!eventId || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
 
     try {
-      if (action === 'check-in') {
-        await manualCheckInTicket(eventId, ticket.publicId);
-      } else {
-        await reverseCheckInTicket(eventId, ticket.publicId);
-      }
+      const updated =
+        action === 'check-in'
+          ? await manualCheckInTicket(eventId, ticket.publicId)
+          : await reverseCheckInTicket(eventId, ticket.publicId);
 
+      setSearch((prev) => ({ ...prev, items: replaceTicket(prev.items, updated) }));
       setSelected(null);
-      await loadData(query);
-      Alert.alert(
-        t.successTitle,
-        action === 'check-in' ? t.checkedInSuccess : t.reversedSuccess,
-      );
+      notify(t.successTitle, action === 'check-in' ? t.checkedInSuccess : t.reversedSuccess);
     } catch (error) {
-      Alert.alert(t.actionFailedTitle, actionErrorMessage(error, t));
-      await loadData(query);
+      const result = classifyAdmissionError(error);
+      if (result.kind === 'FORBIDDEN') void checkAccess();
+      const hint = uncertainOutcomeHint(result, t);
+      notify(t.actionFailedTitle, [admissionMessage(result, t), hint].filter(Boolean).join('\n\n'));
+      setSelected(null);
+      // Re-read the ticket so the list shows its real, server-side status.
+      if (activeQuery.current) void runSearch(activeQuery.current);
     } finally {
+      busyRef.current = false;
       setBusy(false);
+      void refreshStats();
     }
   }
 
   function confirmReverse(ticket: EventTicket) {
-    Alert.alert(t.reverseConfirmTitle, t.reverseConfirmBody, [
-      { text: t.cancelBtn, style: 'cancel' },
-      {
-        text: t.reverseConfirmAction,
-        style: 'destructive',
-        onPress: () => void submitAction(ticket, 'reverse'),
-      },
-    ]);
+    confirmAction({
+      title: t.reverseConfirmTitle,
+      message: t.reverseConfirmBody,
+      confirmLabel: t.reverseConfirmAction,
+      cancelLabel: t.cancelBtn,
+      onConfirm: () => void submitAction(ticket, 'reverse'),
+    });
   }
+
+  const back = () => (router.canGoBack() ? router.back() : router.replace('/events'));
 
   const topBar = (
     <View style={styles.topBar}>
-      <Pressable
-        onPress={() => router.back()}
-        style={({ pressed }) => [styles.backLink, pressed && styles.pressed]}>
+      <Pressable onPress={back} style={({ pressed }) => [styles.backLink, pressed && styles.pressed]}>
         <Text style={styles.backText}>‹ {t.back}</Text>
       </Pressable>
       <LanguagePicker />
@@ -265,9 +312,31 @@ export default function ParticipantsScreen() {
     );
   }
 
-  const totalCount = stats?.totalRegistered ?? allTickets.length;
-  const checkedInCount =
-    stats?.totalCheckedIn ?? allTickets.filter((item) => item.status === 'CHECKED_IN').length;
+  if (access.kind === 'denied') {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        {topBar}
+        <View style={styles.emptyBox}>
+          <Text style={styles.emptyTitle}>{t.scannerNoAccessTitle}</Text>
+          <Text style={styles.empty}>{t.scannerNoAccessBody}</Text>
+          <Pressable
+            onPress={() => router.replace('/events')}
+            style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}>
+            <Text style={styles.retryText}>{t.navMyEvents}</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const { stats: currentStats } = stats;
+  const statsLine = currentStats
+    ? `${currentStats.totalCheckedIn} / ${currentStats.totalRegistered} ${t.attendeesCheckedIn}`
+    : stats.failed
+      ? t.statsUnavailable
+      : t.loadingAttendance;
+
+  const hasQuery = !!search.query;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -275,31 +344,11 @@ export default function ParticipantsScreen() {
 
       <Text style={authStyles.title}>{t.participantsTitle}</Text>
       <Text style={authStyles.subtitle}>
-        {stats || allTickets.length > 0
-          ? `${checkedInCount} / ${totalCount} ${t.attendeesCheckedIn}`
-          : statsError
-            ? t.statsUnavailable
-            : t.loadingParticipants}
+        {access.kind === 'granted' ? `${access.event.name} · ` : ''}
+        {statsLine}
       </Text>
-
-      {/* Overall list summary + Show/Hide toggle */}
-      <View style={styles.visibilityBar}>
-        <View style={styles.visibilityInfo}>
-          <Text style={styles.visibilityTitle}>
-            {t.overallList} ({filteredTickets.length})
-          </Text>
-          <Text style={styles.visibilitySubtitle}>
-            {listRevealed ? t.detailsVisible : t.detailsHidden}
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => setListRevealed((prev) => !prev)}
-          style={({ pressed }) => [styles.togglePill, pressed && styles.pressed]}>
-          <Text style={styles.togglePillText}>
-            {listRevealed ? t.hideList : t.showList}
-          </Text>
-        </Pressable>
-      </View>
+      {stats.stale ? <Notice kind="info" text={t.statsStale} /> : null}
+      {access.kind === 'error' ? <Notice kind="error" text={access.message} /> : null}
 
       <View style={styles.searchSection}>
         <View style={styles.searchRow}>
@@ -307,27 +356,26 @@ export default function ParticipantsScreen() {
             style={styles.input}
             placeholder={t.searchParticipantPlaceholder}
             placeholderTextColor="#9ca3af"
-            value={query}
-            onChangeText={(text) => {
-              setQuery(text);
-              queryRef.current = text;
-              if (text.trim()) setListRevealed(true);
-            }}
-            onSubmitEditing={() => void loadData(query)}
+            value={input}
+            onChangeText={setInput}
+            onSubmitEditing={() => void runSearch(input)}
             returnKeyType="search"
             autoCorrect={false}
             autoCapitalize="none"
             clearButtonMode="while-editing"
+            maxLength={200}
+            accessibilityLabel={t.searchParticipantPlaceholder}
           />
           <Pressable
-            onPress={() => void loadData(query)}
-            disabled={loading}
+            onPress={() => void runSearch(input)}
+            disabled={search.loading || !input.trim()}
+            accessibilityRole="button"
             style={({ pressed }) => [
               styles.searchButton,
-              loading && styles.searchButtonDisabled,
+              (search.loading || !input.trim()) && styles.searchButtonDisabled,
               pressed && styles.pressed,
             ]}>
-            {loading ? (
+            {search.loading ? (
               <ActivityIndicator color="#fff" />
             ) : (
               <Text style={styles.searchButtonText}>{t.searchBtn}</Text>
@@ -336,59 +384,96 @@ export default function ParticipantsScreen() {
         </View>
       </View>
 
-      {loadError ? <Notice kind="error" text={loadError} /> : null}
+      {hasQuery ? (
+        <View style={styles.visibilityBar}>
+          <View style={styles.visibilityInfo}>
+            <Text style={styles.visibilityTitle}>
+              {t.searchResults} ({search.items.length}
+              {search.hasMore ? '+' : ''})
+            </Text>
+            <Text style={styles.visibilitySubtitle}>
+              {detailsRevealed ? t.detailsVisible : t.detailsHidden}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => setDetailsRevealed((prev) => !prev)}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.togglePill, pressed && styles.pressed]}>
+            <Text style={styles.togglePillText}>{detailsRevealed ? t.hideList : t.showList}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {search.error ? <Notice kind="error" text={search.error} /> : null}
 
       <FlatList
-        data={filteredTickets}
+        data={hasQuery ? search.items : []}
         keyExtractor={(item) => item.publicId}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+        onEndReachedThreshold={0.4}
+        onEndReached={loadMore}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#111827" />
         }
         ListEmptyComponent={
           <View style={styles.emptyBox}>
-            {loading ? (
+            {!hasQuery ? (
+              <>
+                <Text style={styles.emptyTitle}>{t.searchFirstTitle}</Text>
+                <Text style={styles.empty}>{t.searchFirstHint}</Text>
+              </>
+            ) : search.loading ? (
               <ActivityIndicator color="#111827" />
-            ) : loadError ? (
+            ) : search.error ? (
               <Pressable
-                onPress={() => void loadData(query)}
+                onPress={() => void runSearch(search.query)}
                 style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}>
                 <Text style={styles.retryText}>{t.retry}</Text>
               </Pressable>
             ) : (
               <>
                 <Text style={styles.emptyTitle}>{t.noParticipantsTitle}</Text>
-                <Text style={styles.empty}>
-                  {query.trim() ? t.noParticipantsSearchHint : t.noParticipantsEmptyHint}
-                </Text>
+                <Text style={styles.empty}>{t.noParticipantsSearchHint}</Text>
               </>
             )}
           </View>
         }
+        ListFooterComponent={
+          hasQuery && search.hasMore ? (
+            <Pressable
+              onPress={loadMore}
+              disabled={search.loadingMore}
+              style={({ pressed }) => [styles.loadMore, pressed && styles.pressed]}>
+              {search.loadingMore ? (
+                <ActivityIndicator color="#111827" />
+              ) : (
+                <Text style={styles.loadMoreText}>{t.loadMore}</Text>
+              )}
+            </Pressable>
+          ) : undefined
+        }
         renderItem={({ item }) => {
           const isCheckedIn = item.status === 'CHECKED_IN';
           const canAct = item.status === 'VALID' || isCheckedIn;
-          const checkedInTime = formatCheckInTime(item.checkedInAt, locale);
+          const checkedInTime = formatCheckInTime(item.checkedInAt, locale, timeZone);
 
-          const displayName = listRevealed
+          const displayName = detailsRevealed
             ? item.attendeeName ?? t.unnamedAttendee
             : maskName(item.attendeeName, t.hiddenAttendee);
-          const displayEmail = listRevealed
-            ? item.attendeeEmail
-            : maskEmail(item.attendeeEmail);
+          const displayEmail = detailsRevealed ? item.attendeeEmail : maskEmail(item.attendeeEmail);
 
           return (
             <Pressable
               style={({ pressed }) => [styles.card, pressed && styles.pressed]}
               onPress={() => canAct && setSelected(item)}
-              disabled={!canAct}>
+              disabled={!canAct}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !canAct }}>
               <View style={[styles.avatar, isCheckedIn && styles.avatarDone]}>
                 <Text style={[styles.avatarText, isCheckedIn && styles.avatarTextDone]}>
-                  {listRevealed
-                    ? initials(item.attendeeName ?? item.attendeeEmail)
-                    : '••'}
+                  {detailsRevealed ? initials(item.attendeeName ?? item.attendeeEmail) : '••'}
                 </Text>
               </View>
 
@@ -451,11 +536,7 @@ export default function ParticipantsScreen() {
             {selected ? (
               <>
                 <View style={styles.sheetHeader}>
-                  <View
-                    style={[
-                      styles.avatar,
-                      selected.status === 'CHECKED_IN' && styles.avatarDone,
-                    ]}>
+                  <View style={[styles.avatar, selected.status === 'CHECKED_IN' && styles.avatarDone]}>
                     <Text
                       style={[
                         styles.avatarText,
@@ -465,12 +546,13 @@ export default function ParticipantsScreen() {
                     </Text>
                   </View>
                   <View style={styles.cardBody}>
-                    <Text style={styles.sheetName}>
-                      {selected.attendeeName ?? t.unnamedAttendee}
-                    </Text>
+                    <Text style={styles.sheetName}>{selected.attendeeName ?? t.unnamedAttendee}</Text>
                     <Text style={styles.rowSubtitle}>{selected.attendeeEmail}</Text>
                     <Text style={styles.rowSubtitle}>
                       {selected.ticketType} · #{selected.orderNumber}
+                    </Text>
+                    <Text style={styles.rowMeta} selectable>
+                      {t.ticketIdLabel}: {selected.publicId}
                     </Text>
                   </View>
                 </View>
@@ -478,8 +560,8 @@ export default function ParticipantsScreen() {
                 <Text style={styles.sheetStatus}>
                   {selected.status === 'CHECKED_IN'
                     ? `${t.checkedInStatus}${
-                        formatCheckInTime(selected.checkedInAt, locale)
-                          ? ` (${formatCheckInTime(selected.checkedInAt, locale)})`
+                        formatCheckInTime(selected.checkedInAt, locale, timeZone)
+                          ? ` (${formatCheckInTime(selected.checkedInAt, locale, timeZone)})`
                           : ''
                       }`
                     : statusLabel(selected.status, t)}
@@ -497,10 +579,8 @@ export default function ParticipantsScreen() {
                   <Pressable
                     disabled={busy}
                     onPress={() => confirmReverse(selected)}
-                    style={({ pressed }) => [
-                      styles.undoButton,
-                      (pressed || busy) && styles.pressed,
-                    ]}>
+                    accessibilityRole="button"
+                    style={({ pressed }) => [styles.undoButton, (pressed || busy) && styles.pressed]}>
                     {busy ? (
                       <ActivityIndicator color="#dc2626" />
                     ) : (
@@ -662,6 +742,15 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   retryText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  loadMore: {
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  loadMoreText: { fontSize: 14, fontWeight: '600', color: '#111827' },
 
   backdrop: {
     flex: 1,

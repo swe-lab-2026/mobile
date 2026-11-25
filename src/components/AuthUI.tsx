@@ -12,19 +12,15 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { describeError } from '../api/errors';
 import { colors, shadow } from '../constants/theme';
 import { Dict, useLanguage } from '../store/language-context';
 import { LanguagePicker } from './LanguagePicker';
 import { Logo } from './Logo';
 
+/** Localized message for auth/profile errors (network, timeout, backend codes). */
 export function authErrorMessage(err: unknown, t: Dict): string {
-  const e = err as any;
-  if (e instanceof TypeError) return t.errNetwork;
-  if (e?.code === 'INVALID_CREDENTIALS') return t.errCredentials;
-  if (e?.code === 'EMAIL_NOT_VERIFIED') return t.errNotVerified;
-  // other backend errors come with their own message
-  if (e?.status && e?.message) return e.message;
-  return t.errGeneric;
+  return describeError(err, t);
 }
 
 export function AuthLayout({ children, onBack }: { children: ReactNode; onBack: () => void }) {

@@ -1,6 +1,7 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
+import { ApiError } from '../api/client';
 import { registerUser, resendVerification, verifyEmail } from '../api/registration';
 import {
   authErrorMessage,
@@ -87,7 +88,7 @@ export default function RegisterScreen() {
       });
       setStep('verify');
     } catch (err) {
-      if ((err as any)?.status === 409) {
+      if (err instanceof ApiError && err.status === 409) {
         setAlreadyExists(true);
         setError(t.errExists);
       } else {

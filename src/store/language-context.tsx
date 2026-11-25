@@ -1,4 +1,14 @@
-import { createContext, ReactNode, useContext, useMemo, useState } from 'react';
+import {
+  createContext,
+  ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { readPreference, writePreference } from './preferences';
 
 export type Lang = 'ru' | 'kk' | 'en';
 
@@ -57,7 +67,7 @@ const ru = {
   errCode: 'Введите 6-значный код.',
   errNetwork: 'Не удалось связаться с сервером. Проверьте подключение.',
   errGeneric: 'Что-то пошло не так. Попробуйте ещё раз.',
-  myEventsSubtitle: 'Мероприятия, где вы назначены администратором.',
+  myEventsSubtitle: 'Ваши мероприятия и мероприятия, на которые вы назначены для проверки билетов.',
   noEventSelected: 'Мероприятие не выбрано',
   chooseEventFirst: 'Сначала выберите мероприятие, чтобы посмотреть его детали.',
   eventUnavailable: 'Мероприятие недоступно',
@@ -85,8 +95,8 @@ const ru = {
   participantsTitle: 'Участники',
   loadingParticipants: 'Загрузка участников…',
   overallList: 'Общий список',
-  showList: 'Показать список',
-  hideList: 'Скрыть список',
+  showList: 'Показать данные',
+  hideList: 'Скрыть данные',
   detailsHidden: 'Данные скрыты для конфиденциальности',
   detailsVisible: 'Имена и email участников открыты',
   searchParticipantPlaceholder: 'Имя, email, номер заказа или ID билета',
@@ -109,7 +119,7 @@ const ru = {
   reversedSuccess: 'Отметка о входе отменена.',
   actionFailedTitle: 'Ошибка',
   reverseConfirmTitle: 'Отменить отметку о входе?',
-  reverseConfirmBody: 'Отменить отметку может только владелец или администратор мероприятия.',
+  reverseConfirmBody: 'Билет снова станет неотмеченным, и его можно будет отсканировать повторно.',
   reverseConfirmAction: 'Отменить отметку',
   errNoEventSelected: 'Мероприятие не выбрано. Откройте этот экран со страницы мероприятия.',
   errInsufficientPermissions: 'У вас нет прав для выполнения этого действия.',
@@ -145,6 +155,80 @@ const ru = {
   cameraPermissionDenied: 'Доступ к камере запрещён. Разрешите его в настройках устройства, чтобы сканировать билеты.',
   openSettings: 'Открыть настройки',
   reverseNotPermitted: 'Отменить отметку может только владелец или администратор мероприятия.',
+  // Errors
+  errTimeout: 'Сервер слишком долго не отвечает. Проверьте подключение и попробуйте ещё раз.',
+  errServer: 'Ошибка на сервере. Попробуйте ещё раз через несколько секунд.',
+  errSessionExpired: 'Сессия истекла. Войдите снова.',
+  errConfig: 'Приложение настроено неверно: адрес сервера недоступен для этой сборки.',
+  errUserBlocked: 'Этот аккаунт заблокирован. Обратитесь в поддержку.',
+  errRateLimited: 'Слишком много попыток. Подождите немного и попробуйте снова.',
+  errInvalidCode: 'Неверный код.',
+  errCodeExpired: 'Срок действия кода истёк. Запросите новый.',
+  // Admission
+  ticketNotFoundTitle: 'Билет не найден',
+  noPermissionTitle: 'Нет доступа',
+  sessionExpiredTitle: 'Сессия истекла',
+  timeoutTitle: 'Нет ответа от сервера',
+  serverErrorTitle: 'Ошибка сервера',
+  uncertainOutcomeHint: 'Результат неизвестен: отметка могла сохраниться. Нажмите «Повторить» — если билет уже отмечен только что, вход был зарегистрирован.',
+  recordedOnRetryTitle: 'Отметка уже сохранена',
+  recordedOnRetryBody: 'Предыдущая попытка, скорее всего, была записана, но ответ не дошёл. Проверьте участника перед входом.',
+  scannerNoAccessTitle: 'Нет доступа к проверке билетов',
+  scannerNoAccessBody: 'Вы не назначены на это мероприятие или назначение было отозвано.',
+  checkingAccess: 'Проверка доступа…',
+  ticketIdLabel: 'ID билета',
+  // Participants
+  searchFirstTitle: 'Найдите участника',
+  searchFirstHint: 'Введите имя, email, номер заказа или ID билета. Поиск выполняется на сервере.',
+  searchResults: 'Результаты поиска',
+  loadMore: 'Загрузить ещё',
+  statsStale: 'Не удалось обновить статистику — показаны последние полученные данные.',
+  updatedAt: 'Обновлено',
+  refresh: 'Обновить',
+  processing: 'Обработка…',
+  // Event status & management
+  eventStatus: {
+    DRAFT: 'Черновик',
+    PUBLISHED: 'Опубликовано',
+    UNPUBLISHED: 'Снято с публикации',
+    CANCELLED: 'Отменено',
+    COMPLETED: 'Завершено',
+  } as Record<string, string>,
+  visibilityLabel: 'Видимость',
+  visibilityName: {
+    PUBLIC: 'Публичное',
+    UNLISTED: 'По ссылке',
+    PRIVATE: 'Приватное',
+  } as Record<string, string>,
+  manageTitle: 'Управление мероприятием',
+  editEvent: 'Редактировать мероприятие',
+  manageTickets: 'Типы билетов и остатки',
+  manageAdmins: 'Администраторы мероприятия',
+  publishChecklist: 'Проверка перед публикацией',
+  publishReady: 'Готово к публикации',
+  publishAllSatisfied: 'Все требования для публикации выполнены.',
+  publishEvent: 'Опубликовать',
+  unpublishEvent: 'Снять с публикации',
+  duplicateEvent: 'Дублировать мероприятие',
+  duplicateConfirmTitle: 'Дублировать мероприятие?',
+  duplicateConfirmBody: 'Будет создана копия мероприятия в статусе черновика.',
+  duplicateAction: 'Дублировать',
+  cancelEvent: 'Отменить мероприятие',
+  cancelEventConfirmTitle: 'Отменить мероприятие?',
+  cancelEventConfirmBody: 'Статус мероприятия изменится на «Отменено». Это действие нельзя отменить.',
+  cancelEventAction: 'Отменить мероприятие',
+  keepBtn: 'Не сейчас',
+  // Password reset
+  resetTitle: 'Восстановление пароля',
+  resetSubtitle: 'Мы отправим код для сброса пароля на ваш email.',
+  sendResetCode: 'Отправить код',
+  newPasswordTitle: 'Новый пароль',
+  newPasswordSubtitle: 'Введите код из письма и придумайте новый пароль.',
+  resetCode: 'Код из письма',
+  newPassword: 'Новый пароль',
+  updatePassword: 'Сохранить пароль',
+  passwordUpdated: 'Пароль обновлён. Войдите с новым паролем.',
+  errResetFields: 'Укажите email, код из письма и пароль не короче 8 символов.',
 };
 
 export type Dict = typeof ru;
@@ -204,7 +288,7 @@ const kk: Dict = {
   errCode: '6 таңбалы кодты енгізіңіз.',
   errNetwork: 'Серверге қосыла алмадық. Қосылымды тексеріңіз.',
   errGeneric: 'Бірдеңе дұрыс болмады. Қайталап көріңіз.',
-  myEventsSubtitle: 'Сіз әкімші ретінде тағайындалған іс-шаралар.',
+  myEventsSubtitle: 'Сіздің іс-шараларыңыз және билеттерді тексеруге тағайындалған іс-шаралар.',
   noEventSelected: 'Іс-шара таңдалмаған',
   chooseEventFirst: 'Мәліметтерін көру үшін алдымен іс-шараны таңдаңыз.',
   eventUnavailable: 'Іс-шара қолжетімсіз',
@@ -232,8 +316,8 @@ const kk: Dict = {
   participantsTitle: 'Қатысушылар',
   loadingParticipants: 'Қатысушылар жүктелуде…',
   overallList: 'Жалпы тізім',
-  showList: 'Тізімді көрсету',
-  hideList: 'Тізімді жасыру',
+  showList: 'Деректерді көрсету',
+  hideList: 'Деректерді жасыру',
   detailsHidden: 'Құпиялылық үшін деректер жасырылған',
   detailsVisible: 'Қатысушылардың аты-жөні мен email ашық',
   searchParticipantPlaceholder: 'Аты, email, тапсырыс нөмірі немесе билет ID',
@@ -256,7 +340,7 @@ const kk: Dict = {
   reversedSuccess: 'Кіру белгісі жойылды.',
   actionFailedTitle: 'Қате',
   reverseConfirmTitle: 'Кіру белгісін жою керек пе?',
-  reverseConfirmBody: 'Кіру белгісін тек іс-шара иесі немесе әкімшісі жоя алады.',
+  reverseConfirmBody: 'Билет қайтадан белгіленбеген болады және оны қайта сканерлеуге болады.',
   reverseConfirmAction: 'Белгіні жою',
   errNoEventSelected: 'Іс-шара таңдалмаған. Бұл бетті іс-шара парақшасынан ашыңыз.',
   errInsufficientPermissions: 'Бұл әрекетті орындауға құқығыңыз жоқ.',
@@ -292,6 +376,80 @@ const kk: Dict = {
   cameraPermissionDenied: 'Камераға рұқсат берілмеген. Билеттерді сканерлеу үшін құрылғы баптауларында рұқсат беріңіз.',
   openSettings: 'Баптауларды ашу',
   reverseNotPermitted: 'Белгіні тек іс-шара иесі немесе әкімшісі ғана болдырмай алады.',
+  // Errors
+  errTimeout: 'Сервер тым ұзақ жауап бермей тұр. Қосылымды тексеріп, қайталап көріңіз.',
+  errServer: 'Сервер қатесі. Бірнеше секундтан кейін қайталап көріңіз.',
+  errSessionExpired: 'Сессия мерзімі өтті. Қайта кіріңіз.',
+  errConfig: 'Қолданба дұрыс бапталмаған: бұл нұсқа үшін сервер мекенжайы қолжетімсіз.',
+  errUserBlocked: 'Бұл аккаунт бұғатталған. Қолдау қызметіне хабарласыңыз.',
+  errRateLimited: 'Әрекет тым көп. Біраз күтіп, қайталап көріңіз.',
+  errInvalidCode: 'Код қате.',
+  errCodeExpired: 'Кодтың мерзімі өтті. Жаңа код сұраңыз.',
+  // Admission
+  ticketNotFoundTitle: 'Билет табылмады',
+  noPermissionTitle: 'Қолжетімділік жоқ',
+  sessionExpiredTitle: 'Сессия мерзімі өтті',
+  timeoutTitle: 'Серверден жауап жоқ',
+  serverErrorTitle: 'Сервер қатесі',
+  uncertainOutcomeHint: 'Нәтиже белгісіз: белгі сақталған болуы мүмкін. «Қайта жіберу» түймесін басыңыз — егер билет жаңа ғана белгіленген болса, кіру тіркелді.',
+  recordedOnRetryTitle: 'Белгі сақталған',
+  recordedOnRetryBody: 'Алдыңғы әрекет тіркелген, бірақ жауап келмеген сияқты. Кіргізер алдында қатысушыны тексеріңіз.',
+  scannerNoAccessTitle: 'Билеттерді тексеруге рұқсат жоқ',
+  scannerNoAccessBody: 'Сіз бұл іс-шараға тағайындалмағансыз немесе тағайындау қайтарылып алынған.',
+  checkingAccess: 'Қолжетімділік тексерілуде…',
+  ticketIdLabel: 'Билет ID',
+  // Participants
+  searchFirstTitle: 'Қатысушыны табыңыз',
+  searchFirstHint: 'Аты, email, тапсырыс нөмірі немесе билет ID енгізіңіз. Іздеу серверде орындалады.',
+  searchResults: 'Іздеу нәтижелері',
+  loadMore: 'Тағы жүктеу',
+  statsStale: 'Статистиканы жаңарту мүмкін болмады — соңғы алынған деректер көрсетілген.',
+  updatedAt: 'Жаңартылды',
+  refresh: 'Жаңарту',
+  processing: 'Өңделуде…',
+  // Event status & management
+  eventStatus: {
+    DRAFT: 'Жоба',
+    PUBLISHED: 'Жарияланған',
+    UNPUBLISHED: 'Жариялаудан алынған',
+    CANCELLED: 'Тоқтатылған',
+    COMPLETED: 'Аяқталған',
+  } as Record<string, string>,
+  visibilityLabel: 'Көріну',
+  visibilityName: {
+    PUBLIC: 'Жалпыға ашық',
+    UNLISTED: 'Сілтеме арқылы',
+    PRIVATE: 'Жеке',
+  } as Record<string, string>,
+  manageTitle: 'Іс-шараны басқару',
+  editEvent: 'Іс-шараны өңдеу',
+  manageTickets: 'Билет түрлері және қалдық',
+  manageAdmins: 'Іс-шара әкімшілері',
+  publishChecklist: 'Жариялау алдындағы тексеру',
+  publishReady: 'Жариялауға дайын',
+  publishAllSatisfied: 'Жариялауға қойылатын барлық талаптар орындалды.',
+  publishEvent: 'Жариялау',
+  unpublishEvent: 'Жариялаудан алу',
+  duplicateEvent: 'Іс-шараның көшірмесін жасау',
+  duplicateConfirmTitle: 'Көшірме жасау керек пе?',
+  duplicateConfirmBody: 'Іс-шараның жоба мәртебесіндегі көшірмесі жасалады.',
+  duplicateAction: 'Көшірме жасау',
+  cancelEvent: 'Іс-шараны тоқтату',
+  cancelEventConfirmTitle: 'Іс-шараны тоқтату керек пе?',
+  cancelEventConfirmBody: 'Іс-шара мәртебесі «Тоқтатылған» болып өзгереді. Бұл әрекетті қайтару мүмкін емес.',
+  cancelEventAction: 'Іс-шараны тоқтату',
+  keepBtn: 'Қазір емес',
+  // Password reset
+  resetTitle: 'Құпиясөзді қалпына келтіру',
+  resetSubtitle: 'Құпиясөзді қалпына келтіру кодын email-ға жібереміз.',
+  sendResetCode: 'Кодты жіберу',
+  newPasswordTitle: 'Жаңа құпиясөз',
+  newPasswordSubtitle: 'Хаттағы кодты енгізіп, жаңа құпиясөз ойлап табыңыз.',
+  resetCode: 'Хаттағы код',
+  newPassword: 'Жаңа құпиясөз',
+  updatePassword: 'Құпиясөзді сақтау',
+  passwordUpdated: 'Құпиясөз жаңартылды. Жаңа құпиясөзбен кіріңіз.',
+  errResetFields: 'Email, хаттағы кодты және кемінде 8 таңбалы құпиясөзді енгізіңіз.',
 };
 
 const en: Dict = {
@@ -349,7 +507,7 @@ const en: Dict = {
   errCode: 'Enter the 6-digit code.',
   errNetwork: 'Cannot reach the server. Check your connection.',
   errGeneric: 'Something went wrong. Please try again.',
-    myEventsSubtitle: 'Events where you are assigned as an administrator.',
+  myEventsSubtitle: 'Events you own and events you are assigned to for ticket checks.',
     noEventSelected: 'No event selected',
   chooseEventFirst: 'Choose an event first to view its details.',
   eventUnavailable: 'Event unavailable',
@@ -377,8 +535,8 @@ const en: Dict = {
   participantsTitle: 'Participants',
   loadingParticipants: 'Loading participants…',
   overallList: 'Overall list',
-  showList: 'Show list',
-  hideList: 'Hide list',
+  showList: 'Show details',
+  hideList: 'Hide details',
   detailsHidden: 'Details are hidden for privacy',
   detailsVisible: 'Attendee names and emails are visible',
   searchParticipantPlaceholder: 'Name, email, order, or ticket ID',
@@ -401,7 +559,7 @@ const en: Dict = {
   reversedSuccess: 'The check-in was reversed.',
   actionFailedTitle: 'Action failed',
   reverseConfirmTitle: 'Reverse check-in?',
-  reverseConfirmBody: 'Only the event owner or an Event Admin can reverse a check-in.',
+  reverseConfirmBody: 'The ticket returns to not checked in and can be scanned again.',
   reverseConfirmAction: 'Reverse',
   errNoEventSelected: 'No event selected. Open this screen from an event.',
   errInsufficientPermissions: 'You do not have permission to perform this action for this event.',
@@ -437,11 +595,85 @@ const en: Dict = {
   cameraPermissionDenied: 'Camera access is denied. Allow it in your device settings to scan tickets.',
   openSettings: 'Open Settings',
   reverseNotPermitted: 'Only the event owner or an Event Admin can reverse a check-in.',
+  // Errors
+  errTimeout: 'The server took too long to respond. Check your connection and try again.',
+  errServer: 'The server had a problem. Try again in a few seconds.',
+  errSessionExpired: 'Your session has expired. Please sign in again.',
+  errConfig: 'The app is misconfigured: the server address is not usable for this build.',
+  errUserBlocked: 'This account is blocked. Contact support.',
+  errRateLimited: 'Too many attempts. Please wait a moment and try again.',
+  errInvalidCode: 'The code is incorrect.',
+  errCodeExpired: 'The code has expired. Request a new one.',
+  // Admission
+  ticketNotFoundTitle: 'Ticket not found',
+  noPermissionTitle: 'No permission',
+  sessionExpiredTitle: 'Session expired',
+  timeoutTitle: 'No response from server',
+  serverErrorTitle: 'Server error',
+  uncertainOutcomeHint: 'The result is unknown: the check-in may have been saved. Tap Retry — if the ticket shows as checked in just now, the admission was recorded.',
+  recordedOnRetryTitle: 'Check-in already recorded',
+  recordedOnRetryBody: 'Your earlier attempt was most likely saved, but its response was lost. Verify the attendee before letting them in.',
+  scannerNoAccessTitle: 'No ticket verification access',
+  scannerNoAccessBody: 'You are not assigned to this event, or your assignment was revoked.',
+  checkingAccess: 'Checking access…',
+  ticketIdLabel: 'Ticket ID',
+  // Participants
+  searchFirstTitle: 'Find an attendee',
+  searchFirstHint: 'Enter a name, email, order number or ticket ID. The search runs on the server.',
+  searchResults: 'Search results',
+  loadMore: 'Load more',
+  statsStale: 'Could not refresh statistics — showing the last values received.',
+  updatedAt: 'Updated',
+  refresh: 'Refresh',
+  processing: 'Processing…',
+  // Event status & management
+  eventStatus: {
+    DRAFT: 'Draft',
+    PUBLISHED: 'Published',
+    UNPUBLISHED: 'Unpublished',
+    CANCELLED: 'Cancelled',
+    COMPLETED: 'Completed',
+  } as Record<string, string>,
+  visibilityLabel: 'Visibility',
+  visibilityName: {
+    PUBLIC: 'Public',
+    UNLISTED: 'Unlisted',
+    PRIVATE: 'Private',
+  } as Record<string, string>,
+  manageTitle: 'Event management',
+  editEvent: 'Edit event',
+  manageTickets: 'Ticket types & inventory',
+  manageAdmins: 'Event administrators',
+  publishChecklist: 'Publishing checklist',
+  publishReady: 'Ready to publish',
+  publishAllSatisfied: 'All publishing requirements are satisfied.',
+  publishEvent: 'Publish event',
+  unpublishEvent: 'Unpublish event',
+  duplicateEvent: 'Duplicate event',
+  duplicateConfirmTitle: 'Duplicate event?',
+  duplicateConfirmBody: 'A draft copy of this event will be created.',
+  duplicateAction: 'Duplicate',
+  cancelEvent: 'Cancel event',
+  cancelEventConfirmTitle: 'Cancel event?',
+  cancelEventConfirmBody: 'The event status changes to Cancelled. This cannot be undone.',
+  cancelEventAction: 'Cancel event',
+  keepBtn: 'Not now',
+  // Password reset
+  resetTitle: 'Reset password',
+  resetSubtitle: 'We will email you a code to reset your password.',
+  sendResetCode: 'Send reset code',
+  newPasswordTitle: 'New password',
+  newPasswordSubtitle: 'Enter the code from the email and choose a new password.',
+  resetCode: 'Code from the email',
+  newPassword: 'New password',
+  updatePassword: 'Update password',
+  passwordUpdated: 'Password updated. Sign in with your new password.',
+  errResetFields: 'Enter your email, the code from the email, and a password of at least 8 characters.',
 };
 
 
 
-const DICTS: Record<Lang, Dict> = { ru, kk, en };
+export const DICTS: Record<Lang, Dict> = { ru, kk, en };
 
 export const LANGUAGES: { code: Lang; label: string; full: string }[] = [
   { code: 'ru', label: 'Рус', full: 'Русский' },
@@ -453,9 +685,34 @@ type LanguageContextValue = { lang: Lang; setLang: (l: Lang) => void; t: Dict };
 
 const LanguageContext = createContext<LanguageContextValue | null>(null);
 
+const LANG_KEY = 'biletflow.ui.lang';
+
+function isLang(value: unknown): value is Lang {
+  return value === 'ru' || value === 'kk' || value === 'en';
+}
+
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  const [lang, setLang] = useState<Lang>('ru');
-  const value = useMemo(() => ({ lang, setLang, t: DICTS[lang] }), [lang]);
+  const [lang, setLangState] = useState<Lang>('ru');
+  const userChose = useRef(false);
+
+  // Restore the last chosen language. A choice made before the read finishes wins.
+  useEffect(() => {
+    let active = true;
+    void readPreference(LANG_KEY).then((stored) => {
+      if (active && !userChose.current && isLang(stored)) setLangState(stored);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const setLang = useCallback((next: Lang) => {
+    userChose.current = true;
+    setLangState(next);
+    void writePreference(LANG_KEY, next);
+  }, []);
+
+  const value = useMemo(() => ({ lang, setLang, t: DICTS[lang] }), [lang, setLang]);
   return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;
 }
 

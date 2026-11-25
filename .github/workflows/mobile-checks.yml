@@ -20,6 +20,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm test -- --ci
       - run: npm run doctor
       - run: npm run export:android
       - run: npm run export:ios

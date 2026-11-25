@@ -38,9 +38,12 @@
     "tailwindcss": "^3.4.19"
   },
   "devDependencies": {
+    "@types/jest": "30.0.0",
     "@types/react": "~19.3.0",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~58.0.4",
+    "jest": "~30.5.2",
+    "jest-expo": "~58.0.15",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -54,7 +57,14 @@
     "doctor": "npx --yes expo-doctor",
     "export:android": "expo export --platform android --output-dir dist/android",
     "export:ios": "expo export --platform ios --output-dir dist/ios",
-    "check": "npm run typecheck && npm run lint && npm run doctor"
+    "check": "npm run typecheck && npm run lint && npm test && npm run doctor",
+    "test": "jest"
   },
-  "private": true
+  "private": true,
+  "jest": {
+    "preset": "jest-expo",
+    "testMatch": [
+      "<rootDir>/src/**/__tests__/**/*.test.ts"
+    ]
+  }
 }

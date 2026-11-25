@@ -11,7 +11,9 @@ import {
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { organizerEvents, ticketTypes } from '../../api/organizer';
 import type { Inventory, TicketPayload, TicketType } from '../../api/organizer';
+import { describeError } from '../../api/errors';
 import { Action, Busy, Card, Field, Notice, Page } from '../../components/organizer-ui';
+import { Ox, useOx, wallTimeLabel } from '../../store/organizer-texts';
 
 type TicketForm = {
   name: string;
@@ -83,24 +85,17 @@ function formatWallTime(date: Date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function dateLabel(value: string) {
-  if (!value) return 'Select date and time';
-  const [date, time] = value.split('T');
-  const [year, month, day] = date.split('-');
-  return `${day}.${month}.${year} at ${time}`;
-}
-
-function ticketPrice(item: TicketType) {
-  if (item.is_free) return 'Free';
+function ticketPrice(item: TicketType, ox: Ox) {
+  if (item.is_free) return ox.free;
   return `${Number(item.price).toLocaleString()} ${item.currency}`;
 }
 
-function DateFieldButton({ label, value, onPress }: { label: string; value: string; onPress: () => void }) {
+function DateFieldButton({ label, value, onPress, ox }: { label: string; value: string; onPress: () => void; ox: Ox }) {
   return (
     <View className="mb-3">
-      <Text className="mb-1.5 text-sm font-semibold text-slate-700">{label} <Text className="font-normal text-slate-400">(optional)</Text></Text>
+      <Text className="mb-1.5 text-sm font-semibold text-slate-700">{label} <Text className="font-normal text-slate-400">({ox.optional})</Text></Text>
       <Pressable onPress={onPress} className="min-h-12 justify-center rounded-xl border border-slate-200 bg-white px-3">
-        <Text className={value ? 'text-base text-slate-900' : 'text-base text-slate-400'}>{dateLabel(value)}</Text>
+        <Text className={value ? 'text-base text-slate-900' : 'text-base text-slate-400'}>{wallTimeLabel(value, ox)}</Text>
       </Pressable>
     </View>
   );
@@ -109,6 +104,7 @@ function DateFieldButton({ label, value, onPress }: { label: string; value: stri
 export default function TicketsScreen() {
   const params = useLocalSearchParams<{ eventId?: string | string[] }>();
   const eventId = Array.isArray(params.eventId) ? params.eventId[0] : params.eventId;
+  const { ox, t } = useOx();
   const [rows, setRows] = useState<TicketType[]>([]);
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const [timeZone, setTimeZone] = useState('Asia/Almaty');
@@ -124,7 +120,7 @@ export default function TicketsScreen() {
   const [dateModal, setDateModal] = useState<{ field: DateField; value: Date } | null>(null);
 
   const load = useCallback(async () => {
-    if (!eventId) { setError('No event was selected.'); setLoading(false); return; }
+    if (!eventId) { setError(ox.noEvent); setLoading(false); return; }
     try {
       const [types, stock, event] = await Promise.all([
         ticketTypes.list(eventId), organizerEvents.inventory(eventId), organizerEvents.get(eventId),
@@ -134,9 +130,9 @@ export default function TicketsScreen() {
       setTimeZone(event.timezone || 'Asia/Almaty');
       setError('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load ticket types.');
+      setError(describeError(e, t));
     } finally { setLoading(false); }
-  }, [eventId]);
+  }, [eventId, ox.noEvent, t]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -190,22 +186,23 @@ export default function TicketsScreen() {
   function validate() {
     const next: Record<string, string> = {};
     const positiveInteger = (value: string) => /^\d+$/.test(value) && Number(value) > 0;
-    if (!form.name.trim()) next.name = 'Name is required.';
+    if (!form.name.trim()) next.name = ox.errName;
     if (paid && (!/^\d+(\.\d{1,2})?$/.test(form.price.replace(',', '.')) || Number(form.price.replace(',', '.')) <= 0)) {
-      next.price = 'Enter a valid price greater than 0.';
+      next.price = ox.errPrice;
     }
-    if (!positiveInteger(form.capacity)) next.capacity = 'Enter a positive whole number.';
-    if (!positiveInteger(form.min_per_order)) next.min_per_order = 'Enter a positive whole number.';
-    if (!positiveInteger(form.max_per_order)) next.max_per_order = 'Enter a positive whole number.';
-    else if (Number(form.max_per_order) < Number(form.min_per_order)) next.max_per_order = 'Maximum must be at least the minimum.';
+    if (!positiveInteger(form.capacity)) next.capacity = ox.errPositive;
+    if (!positiveInteger(form.min_per_order)) next.min_per_order = ox.errPositive;
+    if (!positiveInteger(form.max_per_order)) next.max_per_order = ox.errPositive;
+    else if (Number(form.max_per_order) < Number(form.min_per_order)) next.max_per_order = ox.errMaxMin;
     if (form.sales_starts_at && form.sales_ends_at && form.sales_ends_at <= form.sales_starts_at) {
-      next.sales_ends_at = 'Sales end must be later than sales start.';
+      next.sales_ends_at = ox.errSalesEnd;
     }
     setFieldErrors(next);
     return Object.keys(next).length === 0;
   }
 
   async function saveTicket() {
+    if (saving) return;
     setFormError('');
     if (!validate() || !eventId) return;
     const body: TicketPayload = {
@@ -226,7 +223,7 @@ export default function TicketsScreen() {
       else await ticketTypes.create(eventId, body);
       setFormOpen(false); setEditing(null); setForm(EMPTY_FORM); await load();
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : 'Could not save ticket type.');
+      setFormError(describeError(e, t));
     } finally { setSaving(false); }
   }
 
@@ -237,25 +234,25 @@ export default function TicketsScreen() {
       if (item.is_hidden) await ticketTypes.update(eventId, item.id, { is_hidden: false });
       else await ticketTypes.hide(eventId, item.id);
       await load();
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not update ticket visibility.'); }
+    } catch (e) { setError(describeError(e, t)); }
   }
 
   if (loading) return <Busy />;
 
   return (
-    <Page title="Ticket types" subtitle="Manage ticket prices, capacity and sales availability">
+    <Page title={ox.ticketsTitle} subtitle={ox.ticketsSubtitle}>
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 16, paddingBottom: 36 }} keyboardShouldPersistTaps="handled">
         {error ? <Notice>{error}</Notice> : null}
 
         {inventory ? (
           <Card>
-            <Text className="mb-3 text-lg font-bold text-slate-900">Inventory overview</Text>
+            <Text className="mb-3 text-lg font-bold text-slate-900">{ox.inventory}</Text>
             <View className="flex-row flex-wrap">
               {[
-                { label: 'Event capacity', value: inventory.event_capacity ?? '—' },
-                { label: 'Sold', value: inventory.total_sold },
-                { label: 'Reserved', value: inventory.total_reserved },
-                { label: 'Available', value: inventory.total_available },
+                { label: ox.eventCapacity, value: inventory.event_capacity ?? '—' },
+                { label: ox.sold, value: inventory.total_sold },
+                { label: ox.reserved, value: inventory.total_reserved },
+                { label: ox.available, value: inventory.total_available },
               ].map((item) => (
                 <View key={item.label} className="w-1/2 py-2">
                   <Text className="text-xs text-slate-500">{item.label}</Text>
@@ -268,76 +265,76 @@ export default function TicketsScreen() {
 
         <View className="mb-3 flex-row items-center justify-between">
           <View className="flex-1 pr-3">
-            <Text className="text-lg font-bold text-slate-900">Ticket types</Text>
-            <Text className="text-xs text-slate-500">Hidden tickets are not shown to attendees.</Text>
+            <Text className="text-lg font-bold text-slate-900">{ox.ticketsTitle}</Text>
+            <Text className="text-xs text-slate-500">{ox.hiddenHint}</Text>
           </View>
-          <View className="w-32"><Action label="＋ Add ticket" onPress={startCreate} /></View>
+          <View className="w-32"><Action label={ox.addTicket} onPress={startCreate} /></View>
         </View>
 
         {formOpen ? (
           <Card>
             <View className="mb-3 flex-row items-center justify-between">
-              <Text className="flex-1 text-lg font-bold text-slate-900">{editing ? 'Edit ticket type' : 'Create ticket type'}</Text>
+              <Text className="flex-1 text-lg font-bold text-slate-900">{editing ? ox.editTicket : ox.createTicket}</Text>
               <Pressable onPress={() => setFormOpen(false)} hitSlop={10}><Text className="text-2xl text-slate-500">×</Text></Pressable>
             </View>
             {formError ? <Notice>{formError}</Notice> : null}
 
-            <Field label="Name" value={form.name} onChangeText={(value) => updateForm('name', value)} maxLength={120} />
+            <Field label={ox.name} value={form.name} onChangeText={(value) => updateForm('name', value)} maxLength={120} />
             {fieldErrors.name ? <Text className="-mt-2 mb-3 text-xs text-red-600">{fieldErrors.name}</Text> : null}
-            <Field label="Description (optional)" value={form.description} onChangeText={(value) => updateForm('description', value)} maxLength={2000} />
+            <Field label={ox.descriptionOptional} value={form.description} onChangeText={(value) => updateForm('description', value)} maxLength={2000} />
 
-            <Text className="mb-2 text-sm font-semibold text-slate-700">Ticket price</Text>
+            <Text className="mb-2 text-sm font-semibold text-slate-700">{ox.price}</Text>
             <View className="mb-4 flex-row rounded-xl bg-slate-100 p-1">
               <Pressable onPress={() => { setPaid(false); updateForm('price', ''); }} className={`flex-1 items-center rounded-lg py-3 ${!paid ? 'bg-white' : ''}`}>
-                <Text className={`font-semibold ${!paid ? 'text-slate-900' : 'text-slate-500'}`}>Free</Text>
+                <Text className={`font-semibold ${!paid ? 'text-slate-900' : 'text-slate-500'}`}>{ox.free}</Text>
               </Pressable>
               <Pressable onPress={() => setPaid(true)} className={`flex-1 items-center rounded-lg py-3 ${paid ? 'bg-white' : ''}`}>
-                <Text className={`font-semibold ${paid ? 'text-slate-900' : 'text-slate-500'}`}>Paid</Text>
+                <Text className={`font-semibold ${paid ? 'text-slate-900' : 'text-slate-500'}`}>{ox.paid}</Text>
               </Pressable>
             </View>
             {paid ? (
               <>
                 <View className="flex-row items-end gap-2">
-                  <View className="flex-1"><Field label="Price" value={form.price} onChangeText={(value) => updateForm('price', value)} keyboardType="decimal-pad" placeholder="0.00" /></View>
+                  <View className="flex-1"><Field label={ox.priceLabel} value={form.price} onChangeText={(value) => updateForm('price', value)} keyboardType="decimal-pad" placeholder="0.00" /></View>
                   <View className="mb-3 rounded-xl bg-slate-100 px-4 py-4"><Text className="font-semibold text-slate-700">{CURRENCY}</Text></View>
                 </View>
                 {fieldErrors.price ? <Text className="-mt-2 mb-3 text-xs text-red-600">{fieldErrors.price}</Text> : null}
-                <Notice>Paid ticket checkout depends on the platform payment setup.</Notice>
+                <Notice>{ox.paidNotice}</Notice>
               </>
             ) : null}
 
-            <Field label="Capacity" value={form.capacity} onChangeText={(value) => updateForm('capacity', value)} keyboardType="number-pad" placeholder="e.g. 100" />
+            <Field label={ox.capacity} value={form.capacity} onChangeText={(value) => updateForm('capacity', value)} keyboardType="number-pad" placeholder={ox.capacityPh} />
             {fieldErrors.capacity ? <Text className="-mt-2 mb-3 text-xs text-red-600">{fieldErrors.capacity}</Text> : null}
             <View className="flex-row gap-3">
               <View className="flex-1">
-                <Field label="Min. per order" value={form.min_per_order} onChangeText={(value) => updateForm('min_per_order', value)} keyboardType="number-pad" />
+                <Field label={ox.minPerOrder} value={form.min_per_order} onChangeText={(value) => updateForm('min_per_order', value)} keyboardType="number-pad" />
                 {fieldErrors.min_per_order ? <Text className="-mt-2 mb-3 text-xs text-red-600">{fieldErrors.min_per_order}</Text> : null}
               </View>
               <View className="flex-1">
-                <Field label="Max. per order" value={form.max_per_order} onChangeText={(value) => updateForm('max_per_order', value)} keyboardType="number-pad" />
+                <Field label={ox.maxPerOrder} value={form.max_per_order} onChangeText={(value) => updateForm('max_per_order', value)} keyboardType="number-pad" />
                 {fieldErrors.max_per_order ? <Text className="-mt-2 mb-3 text-xs text-red-600">{fieldErrors.max_per_order}</Text> : null}
               </View>
             </View>
 
-            <DateFieldButton label="Sales start" value={form.sales_starts_at} onPress={() => openDatePicker('sales_starts_at')} />
-            <DateFieldButton label="Sales end" value={form.sales_ends_at} onPress={() => openDatePicker('sales_ends_at')} />
+            <DateFieldButton ox={ox} label={ox.salesStart} value={form.sales_starts_at} onPress={() => openDatePicker('sales_starts_at')} />
+            <DateFieldButton ox={ox} label={ox.salesEnd} value={form.sales_ends_at} onPress={() => openDatePicker('sales_ends_at')} />
             {fieldErrors.sales_ends_at ? <Text className="-mt-2 mb-3 text-xs text-red-600">{fieldErrors.sales_ends_at}</Text> : null}
-            <Text className="-mt-1 mb-3 text-xs text-slate-500">Dates and times use the event timezone: {timeZone}.</Text>
+            <Text className="-mt-1 mb-3 text-xs text-slate-500">{ox.tzNote} {timeZone}.</Text>
 
             <Pressable onPress={() => updateForm('is_hidden', !form.is_hidden)} className="mb-4 flex-row items-center">
               <View className={`mr-3 h-5 w-5 items-center justify-center rounded border ${form.is_hidden ? 'border-blue-600 bg-blue-600' : 'border-slate-300 bg-white'}`}>
                 {form.is_hidden ? <Text className="text-xs font-bold text-white">✓</Text> : null}
               </View>
-              <Text className="flex-1 text-sm text-slate-700">Hide from attendees</Text>
+              <Text className="flex-1 text-sm text-slate-700">{ox.hideFromAttendees}</Text>
             </Pressable>
 
-            <Action label={saving ? 'Saving…' : editing ? 'Save changes' : 'Add ticket type'} onPress={saveTicket} disabled={saving} />
-            <Action label="Cancel" kind="secondary" onPress={() => setFormOpen(false)} disabled={saving} />
+            <Action label={editing ? ox.save : ox.addTicketType} onPress={saveTicket} loading={saving} />
+            <Action label={ox.cancel} kind="secondary" onPress={() => setFormOpen(false)} disabled={saving} />
           </Card>
         ) : null}
 
         {rows.length === 0 ? (
-          <Card><Text className="py-5 text-center text-sm text-slate-500">No ticket types yet. Add your first ticket type above.</Text></Card>
+          <Card><Text className="py-5 text-center text-sm text-slate-500">{ox.noTicketTypes}</Text></Card>
         ) : rows.map((item) => {
           const stock = stockByType.get(item.id);
           return (
@@ -345,31 +342,31 @@ export default function TicketsScreen() {
               <View className="mb-2 flex-row items-start justify-between">
                 <View className="mr-3 flex-1">
                   <Text className="text-base font-bold text-slate-900">{item.name}</Text>
-                  {item.is_hidden ? <Text className="mt-1 text-xs font-semibold text-amber-700">Hidden from attendees</Text> : null}
+                  {item.is_hidden ? <Text className="mt-1 text-xs font-semibold text-amber-700">{ox.hiddenFromAttendees}</Text> : null}
                 </View>
-                <Text className="font-bold text-slate-900">{ticketPrice(item)}</Text>
+                <Text className="font-bold text-slate-900">{ticketPrice(item, ox)}</Text>
               </View>
               {item.description ? <Text className="mb-3 text-sm text-slate-600">{item.description}</Text> : null}
               <View className="mb-3 flex-row flex-wrap">
-                <Text className="mr-3 text-xs text-slate-500">Capacity: {item.capacity}</Text>
-                <Text className="mr-3 text-xs text-slate-500">Per order: {item.min_per_order}–{item.max_per_order}</Text>
+                <Text className="mr-3 text-xs text-slate-500">{ox.capacityShort}: {item.capacity}</Text>
+                <Text className="mr-3 text-xs text-slate-500">{ox.perOrder}: {item.min_per_order}–{item.max_per_order}</Text>
               </View>
               {stock ? (
                 <View className="mb-3 rounded-xl bg-slate-50 p-3">
-                  <View className="flex-row justify-between"><Text className="text-xs text-slate-500">Reserved</Text><Text className="text-xs font-semibold">{stock.reserved}</Text></View>
-                  <View className="mt-1 flex-row justify-between"><Text className="text-xs text-slate-500">Sold</Text><Text className="text-xs font-semibold">{stock.sold}</Text></View>
-                  <View className="mt-1 flex-row justify-between"><Text className="text-xs text-slate-500">Available</Text><Text className="text-xs font-semibold">{stock.available}</Text></View>
+                  <View className="flex-row justify-between"><Text className="text-xs text-slate-500">{ox.reserved}</Text><Text className="text-xs font-semibold">{stock.reserved}</Text></View>
+                  <View className="mt-1 flex-row justify-between"><Text className="text-xs text-slate-500">{ox.sold}</Text><Text className="text-xs font-semibold">{stock.sold}</Text></View>
+                  <View className="mt-1 flex-row justify-between"><Text className="text-xs text-slate-500">{ox.available}</Text><Text className="text-xs font-semibold">{stock.available}</Text></View>
                 </View>
               ) : null}
               <View className="flex-row gap-2">
-                <View className="flex-1"><Action label="Edit" kind="secondary" onPress={() => startEdit(item)} /></View>
-                <View className="flex-1"><Action label={item.is_hidden ? 'Unhide' : 'Hide'} kind="secondary" onPress={() => toggleHidden(item)} /></View>
+                <View className="flex-1"><Action label={ox.edit} kind="secondary" onPress={() => startEdit(item)} /></View>
+                <View className="flex-1"><Action label={item.is_hidden ? ox.unhideBtn : ox.hideBtn} kind="secondary" onPress={() => toggleHidden(item)} /></View>
               </View>
             </Card>
           );
         })}
 
-        <Action label="Back to event" kind="secondary" onPress={() => router.back()} />
+        <Action label={ox.backToEvent} kind="secondary" onPress={() => router.back()} />
       </ScrollView>
 
       {Platform.OS === 'ios' && dateModal ? (
@@ -377,8 +374,8 @@ export default function TicketsScreen() {
           <View className="flex-1 justify-end bg-black/40">
             <View className="rounded-t-3xl bg-white p-4">
               <View className="mb-3 flex-row justify-between">
-                <Pressable onPress={() => setDateModal(null)}><Text className="font-semibold text-slate-500">Cancel</Text></Pressable>
-                <Pressable onPress={() => { updateForm(dateModal.field, formatWallTime(dateModal.value)); setDateModal(null); }}><Text className="font-bold text-blue-600">Done</Text></Pressable>
+                <Pressable onPress={() => setDateModal(null)}><Text className="font-semibold text-slate-500">{ox.cancel}</Text></Pressable>
+                <Pressable onPress={() => { updateForm(dateModal.field, formatWallTime(dateModal.value)); setDateModal(null); }}><Text className="font-bold text-blue-600">{ox.done}</Text></Pressable>
               </View>
               <DateTimePicker value={dateModal.value} mode="datetime" display="spinner" onChange={(_, value) => { if (value) setDateModal((current) => current ? { ...current, value } : null); }} />
             </View>

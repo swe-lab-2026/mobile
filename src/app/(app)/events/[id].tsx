@@ -2,23 +2,25 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { classifyAdmissionError } from '../../../api/admission';
-import { getEventAttendanceStats, getEventDetails } from '../../../api/events';
+import { classifyApiError } from '../../../api/client';
+import { describeError } from '../../../api/errors';
+import { attendancePercent, getAccessibleEvent } from '../../../api/events';
 import { EventRecord, organizerEvents } from '../../../api/organizer';
 import { authStyles, Notice, PrimaryButton } from '../../../components/AuthUI';
+import { confirmAction, notify } from '../../../components/dialogs';
 import { LanguagePicker } from '../../../components/LanguagePicker';
+import { useAttendanceStats } from '../../../features/use-attendance-stats';
 import { Lang, useLanguage } from '../../../store/language-context';
 import { useSelectedEvent } from '../../../store/selected-event-context';
-import { AttendanceStats, EventDetails } from '../../../types/event';
+import { AssignedEvent } from '../../../types/event';
 
 const LOCALES: Record<Lang, string> = {
   ru: 'ru-RU',
@@ -26,40 +28,21 @@ const LOCALES: Record<Lang, string> = {
   en: 'en-GB',
 };
 
-// Alert.alert with buttons is a no-op on react-native-web, so fall back to the browser dialogs.
-function notify(title: string, message: string) {
-  if (Platform.OS === 'web') window.alert(`${title}\n\n${message}`);
-  else Alert.alert(title, message);
-}
-
-function confirmAction(title: string, message: string, confirmLabel: string, onConfirm: () => void) {
-  if (Platform.OS === 'web') {
-    if (window.confirm(`${title}\n\n${message}`)) onConfirm();
-    return;
+/** Formats in the event's own timezone so staff see local venue time. */
+function formatInZone(
+  value: string | undefined,
+  locale: string,
+  timeZone: string | undefined,
+  options: Intl.DateTimeFormatOptions,
+) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return null;
+  try {
+    return date.toLocaleString(locale, timeZone ? { ...options, timeZone } : options);
+  } catch {
+    return date.toLocaleString(locale, options);
   }
-  Alert.alert(title, message, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: confirmLabel, style: 'destructive', onPress: onConfirm },
-  ]);
-}
-
-function formatDate(value: string | undefined, locale: string) {
-  if (!value) return null;
-  const date = new Date(value);
-  if (isNaN(date.getTime())) return null;
-  return date.toLocaleDateString(locale, {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-}
-
-function formatTime(value: string | undefined, locale: string) {
-  if (!value) return null;
-  const date = new Date(value);
-  if (isNaN(date.getTime())) return null;
-  return date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
 }
 
 type InfoRowProps = {
@@ -85,7 +68,7 @@ function InfoRow({ icon, label, value, last }: InfoRowProps) {
 
 type LoadState =
   | { status: 'loading'; id: string }
-  | { status: 'ready'; id: string; event: EventDetails }
+  | { status: 'ready'; id: string; event: AssignedEvent }
   | { status: 'missing'; id: string }
   | { status: 'error'; id: string; message: string };
 
@@ -96,11 +79,12 @@ export default function EventDetailScreen() {
   const { selectEvent } = useSelectedEvent();
 
   const [load, setLoad] = useState<LoadState | null>(null);
-  const [stats, setStats] = useState<{ eventId: string; data: AttendanceStats } | null>(null);
-  const [statsLoading, setStatsLoading] = useState(false);
-  const [statsError, setStatsError] = useState(false);
   const [managedEvent, setManagedEvent] = useState<EventRecord | null>(null);
   const [managementError, setManagementError] = useState('');
+  const [managementBusy, setManagementBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const stats = useAttendanceStats(id);
+  const refreshStats = stats.refresh;
   // Each load gets a generation number; responses from older loads (or after blur) are dropped.
   const generation = useRef(0);
 
@@ -111,21 +95,16 @@ export default function EventDetailScreen() {
     const gen = ++generation.current;
     const isCurrent = () => generation.current === gen;
 
-    let found: EventDetails | null;
+    let found: AssignedEvent | null;
     try {
-      // Re-read on every focus so revoked access is detected, not just cached.
-      found = await getEventDetails(id);
+      // Re-read on every focus so a revoked assignment is detected, not cached.
+      found = await getAccessibleEvent(id);
     } catch (error) {
       if (!isCurrent()) return;
-      const result = classifyAdmissionError(error);
-      if (result.kind === 'FORBIDDEN' || result.kind === 'NOT_FOUND') {
+      if (classifyApiError(error) === 'forbidden') {
         setLoad({ status: 'missing', id });
       } else {
-        setLoad({
-          status: 'error',
-          id,
-          message: result.kind === 'NETWORK' ? t.errNetwork : t.errLoadEvent,
-        });
+        setLoad({ status: 'error', id, message: describeError(error, t) });
       }
       return;
     }
@@ -134,14 +113,16 @@ export default function EventDetailScreen() {
     if (!found) {
       // Not in /events/assigned: deleted, or the user's assignment was revoked.
       setLoad({ status: 'missing', id });
-      setStats(null);
+      setManagedEvent(null);
       return;
     }
 
     setLoad({ status: 'ready', id, event: found });
     selectEvent(id);
+    void refreshStats();
 
-    // Only succeeds for the event owner; others just don't see owner-only actions.
+    // GET /events/{id} succeeds only for the owner (or a platform admin).
+    // Admission staff get 403 and simply don't see management actions.
     organizerEvents
       .get(found.id)
       .then((record) => {
@@ -150,20 +131,7 @@ export default function EventDetailScreen() {
       .catch(() => {
         if (isCurrent()) setManagedEvent(null);
       });
-
-    setStatsLoading(true);
-    try {
-      const data = await getEventAttendanceStats(found.id);
-      if (isCurrent()) {
-        setStats({ eventId: found.id, data });
-        setStatsError(false);
-      }
-    } catch {
-      if (isCurrent()) setStatsError(true);
-    } finally {
-      if (isCurrent()) setStatsLoading(false);
-    }
-  }, [id, selectEvent, t.errLoadEvent, t.errNetwork]);
+  }, [id, selectEvent, refreshStats, t]);
 
   // Runs on first mount and whenever the user returns from the scanner or
   // participants screen, so counters always reflect the API.
@@ -182,17 +150,36 @@ export default function EventDetailScreen() {
     void loadEvent();
   };
 
+  async function onRefresh() {
+    setRefreshing(true);
+    await loadEvent();
+    setRefreshing(false);
+  }
+
+  async function runManagement(action: () => Promise<void>) {
+    if (managementBusy) return;
+    setManagementBusy(true);
+    setManagementError('');
+    try {
+      await action();
+    } catch (e) {
+      setManagementError(describeError(e, t));
+    } finally {
+      setManagementBusy(false);
+    }
+  }
+
   const current = load && load.id === id ? load : null;
   const isLoading = !!id && (!current || current.status === 'loading');
   const currentEvent = current?.status === 'ready' ? current.event : null;
-  const currentStats = stats && stats.eventId === id ? stats.data : null;
+  const currentStats = stats.stats;
   const ownedRecord = managedEvent && managedEvent.id === id ? managedEvent : null;
+
+  const back = () => (router.canGoBack() ? router.back() : router.replace('/events'));
 
   const topBar = (
     <View style={styles.topBar}>
-      <Pressable
-        onPress={() => router.back()}
-        style={({ pressed }) => [styles.backLink, pressed && styles.pressed]}>
+      <Pressable onPress={back} style={({ pressed }) => [styles.backLink, pressed && styles.pressed]}>
         <Text style={styles.backText}>‹ {t.back}</Text>
       </Pressable>
       <LanguagePicker />
@@ -249,24 +236,30 @@ export default function EventDetailScreen() {
     );
   }
 
-  const registered = currentStats?.totalRegistered;
-  const checkedIn = currentStats?.totalCheckedIn;
-  const progress =
-    currentStats && currentStats.totalRegistered > 0
-      ? Math.min(currentStats.totalCheckedIn / currentStats.totalRegistered, 1)
-      : 0;
-  const percent = Math.round(progress * 100);
-
-  const date = formatDate(currentEvent.startsAt, locale);
-  const startTime = formatTime(currentEvent.startsAt, locale);
-  const endTime = formatTime(currentEvent.endsAt, locale);
+  const percent = attendancePercent(currentStats);
+  const tz = currentEvent.timezone;
+  const date = formatInZone(currentEvent.startsAt, locale, tz, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+  const timeOpts: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+  const startTime = formatInZone(currentEvent.startsAt, locale, tz, timeOpts);
+  const endTime = formatInZone(currentEvent.endsAt, locale, tz, timeOpts);
   const time = startTime && endTime ? `${startTime} – ${endTime}` : startTime;
+  const timeWithZone = time && tz ? `${time} (${tz})` : time;
+  const updatedAt = stats.updatedAt
+    ? new Date(stats.updatedAt).toLocaleTimeString(locale, timeOpts)
+    : null;
+  const statusText = currentEvent.status
+    ? t.eventStatus[currentEvent.status] ?? currentEvent.status
+    : null;
 
   const visibleRows = [
     { icon: '📅', label: t.dateLabel, value: date },
-    { icon: '🕒', label: t.timeLabel, value: time },
+    { icon: '🕒', label: t.timeLabel, value: timeWithZone },
     { icon: '📍', label: t.locationLabel, value: currentEvent.location },
-    { icon: '👤', label: t.organizerLabel, value: currentEvent.organizer },
   ].filter((row): row is { icon: string; label: string; value: string } => Boolean(row.value));
 
   return (
@@ -274,25 +267,26 @@ export default function EventDetailScreen() {
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}>
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#111827" />
+        }>
         {topBar}
 
         <Text style={authStyles.title}>{currentEvent.name}</Text>
         <Text style={authStyles.subtitle}>
-          {currentEvent.status
-            ? `${t.statusLabel}: ${currentEvent.status}`
-            : t.eventOverview}
+          {statusText ? `${t.statusLabel}: ${statusText}` : t.eventOverview}
         </Text>
 
-        {/* Attendance metrics */}
+        {/* Attendance metrics: authoritative backend stats only */}
         <View style={styles.metricsRow}>
           <View style={styles.metricCard}>
-            <Text style={styles.metricValue}>{registered ?? '—'}</Text>
+            <Text style={styles.metricValue}>{currentStats?.totalRegistered ?? '—'}</Text>
             <Text style={styles.metricLabel}>{t.registeredCount}</Text>
           </View>
           <View style={styles.metricCard}>
             <Text style={[styles.metricValue, styles.metricValueSuccess]}>
-              {checkedIn ?? '—'}
+              {currentStats?.totalCheckedIn ?? '—'}
             </Text>
             <Text style={styles.metricLabel}>{t.checkedInCount}</Text>
           </View>
@@ -302,9 +296,8 @@ export default function EventDetailScreen() {
           </View>
         </View>
 
-        {/* Progress card */}
         <View style={styles.sectionCard}>
-          {statsLoading && !currentStats ? (
+          {stats.loading && !currentStats ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator size="small" color="#111827" />
               <Text style={styles.mutedText}>{t.loadingAttendance}</Text>
@@ -339,15 +332,37 @@ export default function EventDetailScreen() {
                   </Text>
                 </View>
               </View>
+
+              <View style={styles.statsFooter}>
+                <Text style={styles.mutedText}>
+                  {updatedAt ? `${t.updatedAt} ${updatedAt}` : ''}
+                </Text>
+                <Pressable
+                  onPress={() => void refreshStats()}
+                  disabled={stats.loading}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [pressed && styles.pressed]}>
+                  {stats.loading ? (
+                    <ActivityIndicator size="small" color="#111827" />
+                  ) : (
+                    <Text style={styles.linkText}>{t.refresh}</Text>
+                  )}
+                </Pressable>
+              </View>
+              {stats.stale ? <Notice kind="error" text={t.statsStale} /> : null}
             </>
-          ) : statsError ? (
-            <Notice kind="error" text={t.statsUnavailable} />
+          ) : stats.failed ? (
+            <>
+              <Notice kind="error" text={t.statsUnavailable} />
+              <Pressable onPress={() => void refreshStats()} style={({ pressed }) => [pressed && styles.pressed]}>
+                <Text style={styles.linkText}>{t.retry}</Text>
+              </Pressable>
+            </>
           ) : (
             <Text style={styles.mutedText}>{t.noAttendanceData}</Text>
           )}
         </View>
 
-        {/* Event schedule & location details */}
         {visibleRows.length > 0 ? (
           <View style={styles.detailsCard}>
             {visibleRows.map((row, index) => (
@@ -362,13 +377,10 @@ export default function EventDetailScreen() {
           </View>
         ) : null}
 
-        {/* Actions */}
         <View style={styles.actions}>
           <PrimaryButton
             label={t.openScanner}
-            onPress={() =>
-              router.push({ pathname: '/scanner', params: { eventId: currentEvent.id } })
-            }
+            onPress={() => router.push({ pathname: '/scanner', params: { eventId: currentEvent.id } })}
           />
 
           <Pressable
@@ -383,110 +395,110 @@ export default function EventDetailScreen() {
           </Pressable>
         </View>
 
-        {/* Organizer management */}
-        <View style={[styles.sectionCard, styles.manageCard]}>
-          <Text style={styles.sectionTitle}>Organizer management</Text>
-          <Text style={[styles.mutedText, styles.manageHint]}>
-            {ownedRecord
-              ? `Status: ${ownedRecord.status} · Visibility: ${ownedRecord.visibility}`
-              : 'Management actions are available to the event owner.'}
-          </Text>
-          {managementError ? <Notice kind="error" text={managementError} /> : null}
+        {/* Owner-only management. Hidden entirely for admission staff. */}
+        {ownedRecord ? (
+          <View style={[styles.sectionCard, styles.manageCard]}>
+            <Text style={styles.sectionTitle}>{t.manageTitle}</Text>
+            <Text style={[styles.mutedText, styles.manageHint]}>
+              {`${t.statusLabel}: ${t.eventStatus[ownedRecord.status] ?? ownedRecord.status} · ${t.visibilityLabel}: ${
+                t.visibilityName[ownedRecord.visibility] ?? ownedRecord.visibility
+              }`}
+            </Text>
+            {managementError ? <Notice kind="error" text={managementError} /> : null}
 
-          <View style={styles.actions}>
-            {[
-              {
-                label: 'Edit event',
-                onPress: () =>
-                  router.push({ pathname: '/edit-event', params: { id: currentEvent.id } }),
-              },
-              {
-                label: 'Manage ticket types & inventory',
-                onPress: () =>
-                  router.push({ pathname: '/tickets', params: { eventId: currentEvent.id } }),
-              },
-              {
-                label: 'Manage event administrators',
-                onPress: () =>
-                  router.push({ pathname: '/admins', params: { eventId: currentEvent.id } }),
-              },
-              {
-                label: 'Publishing checklist',
-                onPress: async () => {
-                  try {
-                    const p = await organizerEvents.preview(currentEvent.id);
-                    notify(
-                      p.publish_ready ? 'Ready to publish' : 'Publishing checklist',
-                      p.validation_errors.length
-                        ? p.validation_errors.join('\n')
-                        : 'All publishing requirements are satisfied.',
-                    );
-                  } catch (e: any) {
-                    setManagementError(e?.message ?? 'Could not load publishing checklist');
-                  }
+            <View style={styles.actions}>
+              {[
+                {
+                  label: t.editEvent,
+                  onPress: () => router.push({ pathname: '/edit-event', params: { id: currentEvent.id } }),
                 },
-              },
-            ].map((action) => (
-              <Pressable
-                key={action.label}
-                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
-                onPress={action.onPress}>
-                <Text style={styles.secondaryButtonText}>{action.label}</Text>
-              </Pressable>
-            ))}
+                {
+                  label: t.manageTickets,
+                  onPress: () => router.push({ pathname: '/tickets', params: { eventId: currentEvent.id } }),
+                },
+                {
+                  label: t.manageAdmins,
+                  onPress: () => router.push({ pathname: '/admins', params: { eventId: currentEvent.id } }),
+                },
+                {
+                  label: t.publishChecklist,
+                  onPress: () =>
+                    void runManagement(async () => {
+                      const p = await organizerEvents.preview(currentEvent.id);
+                      notify(
+                        p.publish_ready ? t.publishReady : t.publishChecklist,
+                        p.validation_errors.length ? p.validation_errors.join('\n') : t.publishAllSatisfied,
+                      );
+                    }),
+                },
+              ].map((action) => (
+                <Pressable
+                  key={action.label}
+                  disabled={managementBusy}
+                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+                  onPress={action.onPress}>
+                  <Text style={styles.secondaryButtonText}>{action.label}</Text>
+                </Pressable>
+              ))}
 
-            {ownedRecord ? (
-              <>
+              {ownedRecord.status !== 'CANCELLED' && ownedRecord.status !== 'COMPLETED' ? (
                 <PrimaryButton
-                  label={ownedRecord.status === 'PUBLISHED' ? 'Unpublish event' : 'Publish event'}
-                  onPress={async () => {
-                    try {
+                  label={ownedRecord.status === 'PUBLISHED' ? t.unpublishEvent : t.publishEvent}
+                  loading={managementBusy}
+                  onPress={() =>
+                    void runManagement(async () => {
                       const updated =
                         ownedRecord.status === 'PUBLISHED'
                           ? await organizerEvents.unpublish(currentEvent.id)
                           : await organizerEvents.publish(currentEvent.id);
                       setManagedEvent(updated);
-                      setManagementError('');
-                    } catch (e: any) {
-                      setManagementError(e?.message ?? 'Could not update publishing status');
-                    }
-                  }}
+                      void loadEvent();
+                    })
+                  }
                 />
-                <Pressable
-                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
-                  onPress={() =>
-                    confirmAction('Duplicate event?', 'Create a draft copy of this event?', 'Duplicate', async () => {
-                      try {
+              ) : null}
+              <Pressable
+                disabled={managementBusy}
+                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+                onPress={() =>
+                  confirmAction({
+                    title: t.duplicateConfirmTitle,
+                    message: t.duplicateConfirmBody,
+                    confirmLabel: t.duplicateAction,
+                    cancelLabel: t.cancelBtn,
+                    destructive: false,
+                    onConfirm: () =>
+                      void runManagement(async () => {
                         const copy = await organizerEvents.duplicate(currentEvent.id);
                         router.replace({ pathname: '/events/[id]', params: { id: copy.id } });
-                      } catch (e: any) {
-                        setManagementError(e?.message ?? 'Could not duplicate event');
-                      }
-                    })
-                  }>
-                  <Text style={styles.secondaryButtonText}>Duplicate event</Text>
-                </Pressable>
+                      }),
+                  })
+                }>
+                <Text style={styles.secondaryButtonText}>{t.duplicateEvent}</Text>
+              </Pressable>
+              {ownedRecord.status !== 'CANCELLED' ? (
                 <Pressable
-                  style={({ pressed }) => [
-                    styles.secondaryButton,
-                    styles.dangerButton,
-                    pressed && styles.pressed,
-                  ]}
+                  disabled={managementBusy}
+                  style={({ pressed }) => [styles.secondaryButton, styles.dangerButton, pressed && styles.pressed]}
                   onPress={() =>
-                    confirmAction('Cancel event?', 'This changes the event status to CANCELLED.', 'Cancel event', async () => {
-                      try {
-                        setManagedEvent(await organizerEvents.cancel(currentEvent.id));
-                      } catch (e: any) {
-                        setManagementError(e?.message ?? 'Could not cancel event');
-                      }
+                    confirmAction({
+                      title: t.cancelEventConfirmTitle,
+                      message: t.cancelEventConfirmBody,
+                      confirmLabel: t.cancelEventAction,
+                      cancelLabel: t.keepBtn,
+                      onConfirm: () =>
+                        void runManagement(async () => {
+                          setManagedEvent(await organizerEvents.cancel(currentEvent.id));
+                          void loadEvent();
+                        }),
                     })
                   }>
-                  <Text style={[styles.secondaryButtonText, styles.dangerText]}>Cancel event</Text>
+                  <Text style={[styles.secondaryButtonText, styles.dangerText]}>{t.cancelEvent}</Text>
                 </Pressable>
-              </>
-            ) : null}
+              ) : null}
+            </View>
           </View>
-        </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -513,6 +525,7 @@ const styles = StyleSheet.create({
   },
   backLink: { paddingVertical: 4 },
   backText: { color: '#111827', fontSize: 15, fontWeight: '600' },
+  linkText: { color: '#111827', fontSize: 13, fontWeight: '700' },
 
   metricsRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
   metricCard: {
@@ -527,7 +540,7 @@ const styles = StyleSheet.create({
   },
   metricValue: { fontSize: 26, fontWeight: '700', color: '#111827' },
   metricValueSuccess: { color: '#16a34a' },
-  metricLabel: { marginTop: 4, fontSize: 12, fontWeight: '500', color: '#6b7280' },
+  metricLabel: { marginTop: 4, fontSize: 12, fontWeight: '500', color: '#6b7280', textAlign: 'center' },
 
   sectionCard: {
     backgroundColor: '#fff',
@@ -574,6 +587,13 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   pillText: { fontSize: 12, fontWeight: '600', color: '#4b5563' },
+  statsFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+    minHeight: 20,
+  },
   mutedText: { fontSize: 13, color: '#6b7280' },
 
   detailsCard: {
