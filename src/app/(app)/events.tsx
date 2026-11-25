@@ -15,7 +15,6 @@ import { getAssignedEvents } from '../../api/events';
 import { organizerEvents } from '../../api/organizer';
 import { AppHeader } from '../../components/AppHeader';
 import { colors, shadow } from '../../constants/theme';
-import { useAuth } from '../../store/auth-context';
 import { useLanguage } from '../../store/language-context';
 import { useSelectedEvent } from '../../store/selected-event-context';
 import { AssignedEvent } from '../../types/event';
@@ -51,7 +50,6 @@ async function loadAllEvents(): Promise<AssignedEvent[]> {
 
 export default function EventsListScreen() {
   const { t } = useLanguage();
-  const { user } = useAuth();
   const { selectEvent } = useSelectedEvent();
 
   const [events, setEvents] = useState<AssignedEvent[]>([]);
@@ -89,7 +87,7 @@ export default function EventsListScreen() {
       return () => {
         active = false;
       };
-    }, [user?.userId]),
+    }, []),
   );
 
   const visibleEvents = filter === 'ALL' ? events : events.filter((e) => e.status === filter);

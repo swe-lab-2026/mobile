@@ -41,15 +41,19 @@ export default function ProfileScreen() {
   const [payoutMsg, setPayoutMsg] = useState<Msg>(null);
   const [savingPayout, setSavingPayout] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const me = await getMe();
+  const fetchProfile = useCallback(async () => {
+    const me = await getMe();
+    const org = await getOrganizer();
+    return { me, org };
+  }, []);
+
+  const applyProfile = useCallback(
+    ({ me, org }: Awaited<ReturnType<typeof fetchProfile>>) => {
       setFirstName(me.firstName);
       setLastName(me.lastName);
       setEmail(me.email);
       setVerified(me.verified);
 
-      const org = await getOrganizer();
       setOrgExists(!!org);
       if (org) {
         setDisplayName(org.displayName);
@@ -59,14 +63,34 @@ export default function ProfileScreen() {
         setVerification(org.verificationStatus);
       }
       setLoadFailed(false);
+    },
+    [],
+  );
+
+  const load = useCallback(async () => {
+    try {
+      applyProfile(await fetchProfile());
     } catch {
       setLoadFailed(true);
     }
-  }, []);
+  }, [applyProfile, fetchProfile]);
 
   useEffect(() => {
-    load().finally(() => setLoading(false));
-  }, [load]);
+    let active = true;
+    fetchProfile()
+      .then((data) => {
+        if (active) applyProfile(data);
+      })
+      .catch(() => {
+        if (active) setLoadFailed(true);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [applyProfile, fetchProfile]);
 
   async function onRefresh() {
     setRefreshing(true);

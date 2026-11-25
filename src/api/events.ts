@@ -17,6 +17,9 @@ interface AssignedEventDto {
   venue_name: string | null;
   city: string | null;
   timezone: string;
+  /** Optional: not all backend versions expose the caller's event role. */
+  staff_role?: string | null;
+  can_reverse_check_in?: boolean | null;
 }
 
 interface TicketDto {
@@ -56,8 +59,18 @@ interface AttendanceStatsDto {
 
 const PAGE_SIZE = 100;
 
+// Mirrors backend require_event_reversal_access: owner, PLATFORM_ADMIN or EVENT_ADMIN.
+const REVERSAL_STAFF_ROLES = new Set(['OWNER', 'EVENT_ADMIN']);
+
+function reversalFlag(dto: AssignedEventDto): boolean | undefined {
+  if (typeof dto.can_reverse_check_in === 'boolean') return dto.can_reverse_check_in;
+  if (dto.staff_role) return REVERSAL_STAFF_ROLES.has(dto.staff_role);
+  return undefined;
+}
+
 function toAssignedEvent(dto: AssignedEventDto): AssignedEvent {
   return {
+    canReverseCheckIn: reversalFlag(dto),
     id: dto.event_id,
     name: dto.title,
     startsAt: dto.starts_at,

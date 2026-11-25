@@ -38,8 +38,12 @@ FastAPI backend.
    public environment variables are inlined at bundle time, so restart Metro
    after changing `.env`.
 
-   Use HTTPS for deployed environments. Never put API secrets or private keys in
-   `EXPO_PUBLIC_*` variables because they are included in the client bundle.
+   **Release/demo builds require HTTPS.** Plain `http://` is accepted only in
+   development builds (`__DEV__`) and only for local/LAN hosts (`localhost`,
+   `127.0.0.1`, `10.0.2.2`, private `10.x`/`172.16-31.x`/`192.168.x`). Both the iOS
+   and Android demo builds must use the same deployed API. Never put API secrets
+   or private keys in `EXPO_PUBLIC_*` variables because they are included in the
+   client bundle.
 
 4. Start the app:
 
@@ -48,8 +52,9 @@ FastAPI backend.
    # or: npm run android / npm run ios / npm run web
    ```
 
-If `EXPO_PUBLIC_API_BASE_URL` is missing, the API client fails with an explicit
-configuration error instead of sending requests to relative paths. Trailing
+There is no built-in fallback URL. If `EXPO_PUBLIC_API_BASE_URL` is missing or
+invalid for the build type, the app shows a configuration error screen instead of
+sending requests anywhere. Trailing
 slashes are normalized, and `/api/v1` is appended when the configured URL does
 not already include it.
 
@@ -89,15 +94,37 @@ event and check-in permissions.
 The participant screen is intentionally search-first: the backend requires a
 non-empty search term to list tickets for event staff. It does not fabricate an
 attendee list. Reversal is checked by the server, and a `403` response is shown
-to the user.
+to the user. The Undo (reverse check-in) action follows the caller-specific
+`can_reverse_check_in` flag from `GET /api/v1/events/assigned` (true for the event
+owner, `PLATFORM_ADMIN` and assigned `EVENT_ADMIN`; false for `CHECK_IN_STAFF`).
+The backend still authorizes every reversal request. Against an older backend
+without the flag, the app falls back to showing Undo only to owners and platform
+admins.
+
+Admission results are mapped from `error.details.admission_status`, so the
+scanner and manual admission show distinct messages for admitted, invalid QR,
+Campaign QR, wrong event, cancelled, refunded and already-used tickets. Network
+failures keep the scanned payload so the same check-in can be retried.
+
+The event detail screen reloads the event and attendance counters every time it
+regains focus (for example after scanning), and shows a terminal state with a
+retry action when the event is missing, access was revoked, or the API fails.
 
 ## Checks
 
 ```bash
-npx tsc --noEmit
-npx expo-doctor
-npm run lint
+npm run typecheck              # tsc --noEmit
+npm run lint                   # expo lint
+npm run doctor                 # expo-doctor
+EXPO_PUBLIC_API_BASE_URL=https://api.example.com/api/v1 npm run export:android
+EXPO_PUBLIC_API_BASE_URL=https://api.example.com/api/v1 npm run export:ios
 ```
+
+Expo type declarations come from `"types": ["expo/types"]` in `tsconfig.json`,
+so `npm run typecheck` works from a clean checkout without the generated
+`expo-env.d.ts`. `npm run doctor` runs `expo-doctor` through `npx` (it is not a
+project dependency). `npm run check` runs typecheck, lint and doctor. The same steps, plus a clean
+`npm ci` and both platform exports, run in `.github/workflows/mobile-checks.yml`.
 
 ## Learn more
 

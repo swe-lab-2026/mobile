@@ -223,10 +223,8 @@ export default function EventFormScreen() {
   const [iosPicker, setIosPicker] = useState<PickerState | null>(null);
 
   useEffect(() => {
-    if (!id) {
-      setLoading(false);
-      return;
-    }
+    // `loading` starts as `editing` (i.e. !!id), so there is nothing to reset when creating.
+    if (!id) return;
     let active = true;
     organizerEvents
       .get(id)

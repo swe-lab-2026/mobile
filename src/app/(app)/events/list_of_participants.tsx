@@ -1,5 +1,5 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,15 +13,18 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ApiError } from '../../../api/client';
+import { admissionMessage, classifyAdmissionError } from '../../../api/admission';
 import {
   getEventAttendanceStats,
+  getEventDetails,
   manualCheckInTicket,
   reverseCheckInTicket,
   searchEventTickets,
 } from '../../../api/events';
+import { organizerEvents } from '../../../api/organizer';
 import { authStyles, Notice, PrimaryButton } from '../../../components/AuthUI';
 import { LanguagePicker } from '../../../components/LanguagePicker';
+import { useAuth } from '../../../store/auth-context';
 import { Dict, Lang, useLanguage } from '../../../store/language-context';
 import { AttendanceStats, EventTicket } from '../../../types/event';
 
@@ -30,6 +33,8 @@ const LOCALES: Record<Lang, string> = {
   kk: 'kk-KZ',
   en: 'en-GB',
 };
+
+const REFRESH_MS = 15000;
 
 function initials(name?: string | null) {
   return (
@@ -81,25 +86,24 @@ function statusLabel(status: string, t: Dict) {
 }
 
 function actionErrorMessage(error: unknown, t: Dict): string {
-  if (error instanceof ApiError) {
-    switch (error.code) {
-      case 'INSUFFICIENT_EVENT_PERMISSIONS':
-        return t.errInsufficientPermissions;
-      case 'TICKET_NOT_CHECKED_IN':
-        return t.errTicketNotCheckedIn;
-      case 'TICKET_ALREADY_CHECKED_IN':
-        return t.errTicketAlreadyCheckedIn;
-      case 'TICKET_NOT_VALID':
-        return t.errTicketNotValid;
-      case 'TICKET_NOT_FOUND':
-        return t.errTicketNotFound;
-      case 'NETWORK_ERROR':
-        return t.errNetwork;
-      default:
-        return error.message;
-    }
-  }
-  return t.errActionGeneric;
+  return admissionMessage(classifyAdmissionError(error), t);
+}
+
+/**
+ * UI-side mirror of the backend reversal gate (owner, PLATFORM_ADMIN or
+ * EVENT_ADMIN). The backend still enforces it; this only hides Undo from
+ * users who would be rejected. Unknown means hidden.
+ */
+async function resolveReversalPermission(
+  eventId: string,
+  userId: string | undefined,
+  isPlatformAdmin: boolean,
+): Promise<boolean> {
+  if (isPlatformAdmin) return true;
+  const assigned = await getEventDetails(eventId).catch(() => null);
+  if (typeof assigned?.canReverseCheckIn === 'boolean') return assigned.canReverseCheckIn;
+  const record = await organizerEvents.get(eventId).catch(() => null);
+  return !!record && !!userId && record.owner_user_id === userId;
 }
 
 export default function ParticipantsScreen() {
@@ -118,17 +122,26 @@ export default function ParticipantsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<EventTicket | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reversal, setReversal] = useState<{ eventId: string; allowed: boolean } | null>(null);
   const requestId = useRef(0);
+  const hasData = useRef(false);
+  const busyRef = useRef(false);
+  const { user, isPlatformAdmin } = useAuth();
+  const canReverse = !!eventId && reversal?.eventId === eventId && reversal.allowed;
   const locale = LOCALES[lang];
 
+  // silent = true: refresh in the background, keep the current list on screen,
+  // and keep the old data if the request fails
   const loadData = useCallback(
-    async (searchTerm = '') => {
+    async (searchTerm = '', silent = false) => {
       if (!eventId) return;
       const id = requestId.current + 1;
       requestId.current = id;
 
-      setLoading(true);
-      setLoadError(null);
+      if (!silent) {
+        setLoading(true);
+        setLoadError(null);
+      }
 
       const [statsResult, ticketsResult] = await Promise.allSettled([
         getEventAttendanceStats(eventId),
@@ -140,13 +153,15 @@ export default function ParticipantsScreen() {
       if (statsResult.status === 'fulfilled') {
         setStats(statsResult.value);
         setStatsError(false);
-      } else {
+      } else if (!silent) {
         setStatsError(true);
       }
 
       if (ticketsResult.status === 'fulfilled') {
         setAllTickets(ticketsResult.value);
-      } else {
+        hasData.current = true;
+        setLoadError(null);
+      } else if (!silent) {
         setAllTickets([]);
         setLoadError(actionErrorMessage(ticketsResult.reason, t));
       }
@@ -156,9 +171,33 @@ export default function ParticipantsScreen() {
     [eventId, t],
   );
 
-  useEffect(() => {
-    void loadData('');
-  }, [loadData]);
+  // Reload when the screen gets focus (for example after the scanner), and every
+  // 15 seconds while it stays open, so check-ins by other staff appear too.
+  const queryRef = useRef('');
+  useFocusEffect(
+    useCallback(() => {
+      void loadData(queryRef.current, hasData.current);
+
+      const timer = setInterval(() => {
+        if (!busyRef.current) void loadData(queryRef.current, true);
+      }, REFRESH_MS);
+      return () => clearInterval(timer);
+    }, [loadData]),
+  );
+
+  const userId = user?.userId;
+  useFocusEffect(
+    useCallback(() => {
+      if (!eventId) return;
+      let active = true;
+      void resolveReversalPermission(eventId, userId, isPlatformAdmin).then((allowed) => {
+        if (active) setReversal({ eventId, allowed });
+      });
+      return () => {
+        active = false;
+      };
+    }, [eventId, userId, isPlatformAdmin]),
+  );
 
   const filteredTickets = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
@@ -179,13 +218,14 @@ export default function ParticipantsScreen() {
 
   async function onRefresh() {
     setRefreshing(true);
-    await loadData(query);
+    await loadData(query, true);
     setRefreshing(false);
   }
 
   async function submitAction(ticket: EventTicket, action: 'check-in' | 'reverse') {
     if (!eventId || busy) return;
     setBusy(true);
+    busyRef.current = true;
 
     try {
       if (action === 'check-in') {
@@ -195,15 +235,16 @@ export default function ParticipantsScreen() {
       }
 
       setSelected(null);
-      await loadData(query);
+      await loadData(query, true);
       Alert.alert(
         t.successTitle,
         action === 'check-in' ? t.checkedInSuccess : t.reversedSuccess,
       );
     } catch (error) {
       Alert.alert(t.actionFailedTitle, actionErrorMessage(error, t));
-      await loadData(query);
+      await loadData(query, true);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -272,9 +313,7 @@ export default function ParticipantsScreen() {
         <Pressable
           onPress={() => setListRevealed((prev) => !prev)}
           style={({ pressed }) => [styles.togglePill, pressed && styles.pressed]}>
-          <Text style={styles.togglePillText}>
-            {listRevealed ? t.hideList : t.showList}
-          </Text>
+          <Text style={styles.togglePillText}>{listRevealed ? t.hideList : t.showList}</Text>
         </Pressable>
       </View>
 
@@ -287,6 +326,7 @@ export default function ParticipantsScreen() {
             value={query}
             onChangeText={(text) => {
               setQuery(text);
+              queryRef.current = text;
               if (text.trim()) setListRevealed(true);
             }}
             onSubmitEditing={() => void loadData(query)}
@@ -351,9 +391,7 @@ export default function ParticipantsScreen() {
           const displayName = listRevealed
             ? item.attendeeName ?? t.unnamedAttendee
             : maskName(item.attendeeName, t.hiddenAttendee);
-          const displayEmail = listRevealed
-            ? item.attendeeEmail
-            : maskEmail(item.attendeeEmail);
+          const displayEmail = listRevealed ? item.attendeeEmail : maskEmail(item.attendeeEmail);
 
           return (
             <Pressable
@@ -362,9 +400,7 @@ export default function ParticipantsScreen() {
               disabled={!canAct}>
               <View style={[styles.avatar, isCheckedIn && styles.avatarDone]}>
                 <Text style={[styles.avatarText, isCheckedIn && styles.avatarTextDone]}>
-                  {listRevealed
-                    ? initials(item.attendeeName ?? item.attendeeEmail)
-                    : '••'}
+                  {listRevealed ? initials(item.attendeeName ?? item.attendeeEmail) : '••'}
                 </Text>
               </View>
 
@@ -428,10 +464,7 @@ export default function ParticipantsScreen() {
               <>
                 <View style={styles.sheetHeader}>
                   <View
-                    style={[
-                      styles.avatar,
-                      selected.status === 'CHECKED_IN' && styles.avatarDone,
-                    ]}>
+                    style={[styles.avatar, selected.status === 'CHECKED_IN' && styles.avatarDone]}>
                     <Text
                       style={[
                         styles.avatarText,
@@ -467,14 +500,13 @@ export default function ParticipantsScreen() {
                     onPress={() => void submitAction(selected, 'check-in')}
                     loading={busy}
                   />
+                ) : !canReverse ? (
+                  <Notice kind="info" text={t.reverseNotPermitted} />
                 ) : (
                   <Pressable
                     disabled={busy}
                     onPress={() => confirmReverse(selected)}
-                    style={({ pressed }) => [
-                      styles.undoButton,
-                      (pressed || busy) && styles.pressed,
-                    ]}>
+                    style={({ pressed }) => [styles.undoButton, (pressed || busy) && styles.pressed]}>
                     {busy ? (
                       <ActivityIndicator color="#dc2626" />
                     ) : (

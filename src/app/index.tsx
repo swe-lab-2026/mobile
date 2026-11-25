@@ -40,10 +40,13 @@ export default function CatalogScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
   const [query, setQuery] = useState('');
+  // "Now" for the upcoming-events filter; refreshed whenever events are (re)loaded.
+  const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async () => {
     try {
       setEvents(await getCatalogEvents());
+      setNow(Date.now());
       setError(false);
     } catch {
       setError(true);
@@ -51,8 +54,24 @@ export default function CatalogScreen() {
   }, []);
 
   useEffect(() => {
-    load().finally(() => setLoading(false));
-  }, [load]);
+    let active = true;
+    getCatalogEvents()
+      .then((data) => {
+        if (!active) return;
+        setEvents(data);
+        setNow(Date.now());
+        setError(false);
+      })
+      .catch(() => {
+        if (active) setError(true);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function onRefresh() {
     setRefreshing(true);
@@ -67,7 +86,6 @@ export default function CatalogScreen() {
   }
 
   const visible = useMemo(() => {
-    const now = Date.now();
     const q = query.trim().toLowerCase();
 
     return events
@@ -78,7 +96,7 @@ export default function CatalogScreen() {
           : true
       )
       .sort((a, b) => startTime(a) - startTime(b)); // nearest first
-  }, [events, query]);
+  }, [events, query, now]);
 
   function renderItem({ item }: { item: CatalogEvent }) {
     const d = new Date(item.startsAt);

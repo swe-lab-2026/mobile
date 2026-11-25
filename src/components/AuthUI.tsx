@@ -118,12 +118,20 @@ export function PrimaryButton({
   );
 }
 
-export function Notice({ kind, text }: { kind: 'error' | 'info'; text: string }) {
+export type NoticeKind = 'error' | 'info' | 'success';
+
+export function Notice({ kind, text }: { kind: NoticeKind; text: string }) {
+  const box =
+    kind === 'error' ? styles.noticeError : kind === 'success' ? styles.noticeSuccess : styles.noticeInfo;
+  const textStyle =
+    kind === 'error'
+      ? styles.noticeTextError
+      : kind === 'success'
+        ? styles.noticeTextSuccess
+        : styles.noticeTextInfo;
   return (
-    <View style={[styles.notice, kind === 'error' ? styles.noticeError : styles.noticeInfo]}>
-      <Text
-        style={[styles.noticeText, kind === 'error' ? styles.noticeTextError : styles.noticeTextInfo]}
-      >
+    <View style={[styles.notice, box]}>
+      <Text style={[styles.noticeText, textStyle]}>
         {text}
       </Text>
     </View>
@@ -250,6 +258,8 @@ const styles = StyleSheet.create({
   noticeText: { fontSize: 14, lineHeight: 20, textAlign: 'center' },
   noticeTextError: { color: colors.danger },
   noticeTextInfo: { color: colors.brandDark },
+  noticeSuccess: { backgroundColor: '#dcfce7' },
+  noticeTextSuccess: { color: '#166534' },
 
   linkText: { fontSize: 14, fontWeight: '700', color: colors.brand },
   switchRow: {

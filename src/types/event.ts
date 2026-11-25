@@ -6,6 +6,11 @@ export interface AssignedEvent {
   location?: string;
   status?: string;
   timezone?: string;
+  /**
+   * Whether the current user may reverse check-ins, when the API reports it.
+   * Undefined means the API did not say; callers fall back to owner/platform-admin checks.
+   */
+  canReverseCheckIn?: boolean;
 }
 
 export interface EventDetails extends AssignedEvent {

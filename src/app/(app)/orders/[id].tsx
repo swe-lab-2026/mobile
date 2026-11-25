@@ -108,10 +108,11 @@ export default function OrderDetailScreen() {
 
           <View style={styles.row}>
             <Text style={styles.eventTitle} numberOfLines={2}>
-              {t.typeName ?? order.eventTitle}
+              {order.eventTitle || t.typeName}
             </Text>
             <Badge text={tx.ticketStatus[t.status] ?? t.status} tone={statusTone(t.status)} />
           </View>
+          {t.typeName ? <Text style={styles.muted}>{t.typeName}</Text> : null}
 
           {t.attendeeName ? (
             <View style={styles.field}>
