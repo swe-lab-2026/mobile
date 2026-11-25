@@ -13,6 +13,7 @@ import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/d
 import { organizerEvents, ticketTypes } from '../../api/organizer';
 import type { Inventory, TicketPayload, TicketType } from '../../api/organizer';
 import { Action, Busy, Card, Field, Notice, Page } from '../../components/organizer-ui';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 type TicketForm = {
   name: string;
@@ -244,6 +245,7 @@ export default function TicketsScreen() {
   if (loading) return <Busy />;
 
   return (
+    <SafeAreaView className="flex-1 bg-slate-50" edges={['top', 'bottom']}>
     <Page title="Ticket types" subtitle="Manage ticket prices, capacity and sales availability">
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 16, paddingBottom: 36 }} keyboardShouldPersistTaps="handled">
         {error ? <Notice>{error}</Notice> : null}
@@ -387,5 +389,6 @@ export default function TicketsScreen() {
         </Modal>
       ) : null}
     </Page>
+    </SafeAreaView>
   );
 }

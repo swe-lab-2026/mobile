@@ -16,6 +16,7 @@ import { ApiError } from '../api/client';
 import { organizerEvents } from '../api/organizer';
 import type { EventPayload, EventRecord, EventVisibility } from '../api/organizer';
 import { Action, Busy, Card, Field, Notice, Page } from './organizer-ui';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 type ImageDraft = { object_key: string; alt_text: string };
 type DateField =
@@ -417,6 +418,7 @@ export default function EventFormScreen() {
   if (loading) return <Busy />;
 
   return (
+    <SafeAreaView className="flex-1 bg-slate-50" edges={['top', 'bottom']}>
     <Page
       title={editing ? 'Edit event' : 'Create event'}
       subtitle="Add event details, venue, schedule and registration settings"
@@ -748,5 +750,6 @@ export default function EventFormScreen() {
         </Modal>
       ) : null}
     </Page>
+    </SafeAreaView>
   );
 }
