@@ -3,8 +3,17 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { getOrders, OrderSummary } from '../../../api/account';
 import { Badge, Card, Screen, statusTone } from '../../../components/Screen';
-import { colors, shadow } from '../../../constants/theme';
 import { useTx } from '../../../store/screen-texts';
+
+const C = {
+  brand: '#1a7a3c',
+  brandDark: '#166534',
+  brandSoft: '#e8f3ec',
+  ink: '#111827',
+  text: '#374151',
+  muted: '#6b7280',
+  card: '#ffffff',
+};
 
 export default function OrdersScreen() {
   const { tx, formatDateTime } = useTx();
@@ -23,23 +32,8 @@ export default function OrdersScreen() {
   }, []);
 
   useEffect(() => {
-    let active = true;
-    getOrders()
-      .then((data) => {
-        if (!active) return;
-        setOrders(data);
-        setError(false);
-      })
-      .catch(() => {
-        if (active) setError(true);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+    load().finally(() => setLoading(false));
+  }, [load]);
 
   async function onRefresh() {
     setRefreshing(true);
@@ -55,7 +49,7 @@ export default function OrdersScreen() {
       onRefresh={onRefresh}
     >
       {loading ? (
-        <ActivityIndicator size="large" color={colors.brand} style={styles.loader} />
+        <ActivityIndicator size="large" color={C.brand} style={styles.loader} />
       ) : error ? (
         <Card>
           <Text style={styles.empty}>{tx.loadError}</Text>
@@ -63,14 +57,20 @@ export default function OrdersScreen() {
       ) : orders.length === 0 ? (
         <View style={styles.emptyBox}>
           <Text style={styles.empty}>{tx.noOrders}</Text>
-          <TouchableOpacity activeOpacity={0.85} onPress={() => router.push('/')} style={styles.button}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => router.push('/')}
+            style={styles.button}
+          >
             <Text style={styles.buttonText}>{tx.browse}</Text>
           </TouchableOpacity>
         </View>
       ) : (
         orders.map((o) => {
+          const title = o.eventTitle || (o.number ? `${tx.orderLabel} №${o.number}` : tx.orderLabel);
+
           const meta = [
-            o.number ? `${tx.orderLabel} №${o.number}` : '',
+            o.eventTitle && o.number ? `${tx.orderLabel} №${o.number}` : '',
             formatDateTime(o.createdAt),
             o.ticketCount != null ? `${tx.ticketsShort}: ${o.ticketCount}` : '',
           ]
@@ -86,11 +86,20 @@ export default function OrdersScreen() {
             >
               <View style={styles.row}>
                 <Text style={styles.eventTitle} numberOfLines={2}>
-                  {o.eventTitle}
+                  {title}
                 </Text>
                 <Badge text={tx.orderStatus[o.status] ?? o.status} tone={statusTone(o.status)} />
               </View>
-              <Text style={styles.meta}>{meta}</Text>
+
+              {o.ticketNames ? (
+                <View style={styles.ticketChip}>
+                  <Text style={styles.ticketChipText} numberOfLines={2}>
+                    🎟 {o.ticketNames}
+                  </Text>
+                </View>
+              ) : null}
+
+              {meta ? <Text style={styles.meta}>{meta}</Text> : null}
               <Text style={styles.price}>
                 {o.total === 0 ? tx.free : `${o.total} ${o.currency}`}
               </Text>
@@ -105,28 +114,41 @@ export default function OrdersScreen() {
 const styles = StyleSheet.create({
   loader: { marginTop: 40 },
   emptyBox: { alignItems: 'center', marginTop: 32, gap: 16 },
-  empty: { fontSize: 16, color: colors.muted, textAlign: 'center' },
+  empty: { fontSize: 16, color: C.muted, textAlign: 'center' },
   button: {
     height: 48,
     paddingHorizontal: 24,
     borderRadius: 14,
-    backgroundColor: colors.ink,
+    backgroundColor: C.ink,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  buttonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  buttonText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
 
   card: {
-    backgroundColor: colors.card,
+    backgroundColor: C.card,
     borderRadius: 22,
     padding: 18,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: '#eef0f3',
-    ...shadow,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.07,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
   row: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
-  eventTitle: { flex: 1, fontSize: 17, fontWeight: '700', color: colors.ink, lineHeight: 22 },
-  meta: { marginTop: 8, fontSize: 13, lineHeight: 19, color: colors.muted },
-  price: { marginTop: 10, fontSize: 16, fontWeight: '800', color: colors.ink },
+  eventTitle: { flex: 1, fontSize: 17, fontWeight: '700', color: C.ink, lineHeight: 22 },
+  ticketChip: {
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: C.brandSoft,
+  },
+  ticketChipText: { fontSize: 13, fontWeight: '600', color: C.brandDark },
+  meta: { marginTop: 10, fontSize: 13, lineHeight: 19, color: C.muted },
+  price: { marginTop: 10, fontSize: 16, fontWeight: '800', color: C.ink },
 });

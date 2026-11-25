@@ -34,6 +34,8 @@ const LOCALES: Record<Lang, string> = {
   en: 'en-GB',
 };
 
+const REFRESH_MS = 15000;
+
 function initials(name?: string | null) {
   return (
     (name ?? '?')
@@ -122,18 +124,24 @@ export default function ParticipantsScreen() {
   const [busy, setBusy] = useState(false);
   const [reversal, setReversal] = useState<{ eventId: string; allowed: boolean } | null>(null);
   const requestId = useRef(0);
+  const hasData = useRef(false);
+  const busyRef = useRef(false);
   const { user, isPlatformAdmin } = useAuth();
   const canReverse = !!eventId && reversal?.eventId === eventId && reversal.allowed;
   const locale = LOCALES[lang];
 
+  // silent = true: refresh in the background, keep the current list on screen,
+  // and keep the old data if the request fails
   const loadData = useCallback(
-    async (searchTerm = '') => {
+    async (searchTerm = '', silent = false) => {
       if (!eventId) return;
       const id = requestId.current + 1;
       requestId.current = id;
 
-      setLoading(true);
-      setLoadError(null);
+      if (!silent) {
+        setLoading(true);
+        setLoadError(null);
+      }
 
       const [statsResult, ticketsResult] = await Promise.allSettled([
         getEventAttendanceStats(eventId),
@@ -145,13 +153,15 @@ export default function ParticipantsScreen() {
       if (statsResult.status === 'fulfilled') {
         setStats(statsResult.value);
         setStatsError(false);
-      } else {
+      } else if (!silent) {
         setStatsError(true);
       }
 
       if (ticketsResult.status === 'fulfilled') {
         setAllTickets(ticketsResult.value);
-      } else {
+        hasData.current = true;
+        setLoadError(null);
+      } else if (!silent) {
         setAllTickets([]);
         setLoadError(actionErrorMessage(ticketsResult.reason, t));
       }
@@ -161,11 +171,17 @@ export default function ParticipantsScreen() {
     [eventId, t],
   );
 
-  // Reload on focus so counts and statuses reflect check-ins made elsewhere (e.g. the scanner).
+  // Reload when the screen gets focus (for example after the scanner), and every
+  // 15 seconds while it stays open, so check-ins by other staff appear too.
   const queryRef = useRef('');
   useFocusEffect(
     useCallback(() => {
-      void loadData(queryRef.current);
+      void loadData(queryRef.current, hasData.current);
+
+      const timer = setInterval(() => {
+        if (!busyRef.current) void loadData(queryRef.current, true);
+      }, REFRESH_MS);
+      return () => clearInterval(timer);
     }, [loadData]),
   );
 
@@ -202,13 +218,14 @@ export default function ParticipantsScreen() {
 
   async function onRefresh() {
     setRefreshing(true);
-    await loadData(query);
+    await loadData(query, true);
     setRefreshing(false);
   }
 
   async function submitAction(ticket: EventTicket, action: 'check-in' | 'reverse') {
     if (!eventId || busy) return;
     setBusy(true);
+    busyRef.current = true;
 
     try {
       if (action === 'check-in') {
@@ -218,15 +235,16 @@ export default function ParticipantsScreen() {
       }
 
       setSelected(null);
-      await loadData(query);
+      await loadData(query, true);
       Alert.alert(
         t.successTitle,
         action === 'check-in' ? t.checkedInSuccess : t.reversedSuccess,
       );
     } catch (error) {
       Alert.alert(t.actionFailedTitle, actionErrorMessage(error, t));
-      await loadData(query);
+      await loadData(query, true);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -295,9 +313,7 @@ export default function ParticipantsScreen() {
         <Pressable
           onPress={() => setListRevealed((prev) => !prev)}
           style={({ pressed }) => [styles.togglePill, pressed && styles.pressed]}>
-          <Text style={styles.togglePillText}>
-            {listRevealed ? t.hideList : t.showList}
-          </Text>
+          <Text style={styles.togglePillText}>{listRevealed ? t.hideList : t.showList}</Text>
         </Pressable>
       </View>
 
@@ -375,9 +391,7 @@ export default function ParticipantsScreen() {
           const displayName = listRevealed
             ? item.attendeeName ?? t.unnamedAttendee
             : maskName(item.attendeeName, t.hiddenAttendee);
-          const displayEmail = listRevealed
-            ? item.attendeeEmail
-            : maskEmail(item.attendeeEmail);
+          const displayEmail = listRevealed ? item.attendeeEmail : maskEmail(item.attendeeEmail);
 
           return (
             <Pressable
@@ -386,9 +400,7 @@ export default function ParticipantsScreen() {
               disabled={!canAct}>
               <View style={[styles.avatar, isCheckedIn && styles.avatarDone]}>
                 <Text style={[styles.avatarText, isCheckedIn && styles.avatarTextDone]}>
-                  {listRevealed
-                    ? initials(item.attendeeName ?? item.attendeeEmail)
-                    : '••'}
+                  {listRevealed ? initials(item.attendeeName ?? item.attendeeEmail) : '••'}
                 </Text>
               </View>
 
@@ -452,10 +464,7 @@ export default function ParticipantsScreen() {
               <>
                 <View style={styles.sheetHeader}>
                   <View
-                    style={[
-                      styles.avatar,
-                      selected.status === 'CHECKED_IN' && styles.avatarDone,
-                    ]}>
+                    style={[styles.avatar, selected.status === 'CHECKED_IN' && styles.avatarDone]}>
                     <Text
                       style={[
                         styles.avatarText,
@@ -497,10 +506,7 @@ export default function ParticipantsScreen() {
                   <Pressable
                     disabled={busy}
                     onPress={() => confirmReverse(selected)}
-                    style={({ pressed }) => [
-                      styles.undoButton,
-                      (pressed || busy) && styles.pressed,
-                    ]}>
+                    style={({ pressed }) => [styles.undoButton, (pressed || busy) && styles.pressed]}>
                     {busy ? (
                       <ActivityIndicator color="#dc2626" />
                     ) : (

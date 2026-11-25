@@ -10,7 +10,9 @@ function toArray(body: any): any[] {
 export interface OrderSummary {
   id: string;
   number?: string;
+  eventId?: string;
   eventTitle: string;
+  ticketNames?: string; 
   createdAt?: string;
   status: string;
   total: number;
@@ -40,56 +42,85 @@ export interface OrderDetail extends OrderSummary {
 }
 
 function toOrderSummary(o: any): OrderSummary {
+  const tickets: any[] = Array.isArray(o.tickets) ? o.tickets : [];
+  const items: any[] = Array.isArray(o.items) ? o.items : [];
+  const first = tickets[0] ?? {};
+
+  const ticketNames = items
+    .map((i) => (i.ticket_type_name ? `${i.ticket_type_name} × ${Number(i.quantity ?? 1)}` : ''))
+    .filter(Boolean)
+    .join(', ');
+  const quantity = items.reduce((sum, i) => sum + Number(i.quantity ?? 1), 0);
+
   return {
     id: String(o.id ?? o.order_id),
     number: o.order_number != null ? String(o.order_number) : undefined,
-    eventTitle: o.event_title ?? o.event?.title ?? '',
+    eventId: o.event_id ? String(o.event_id) : undefined,
+    eventTitle: first.event_title ?? o.event_title ?? '',
+    ticketNames: ticketNames || undefined,
     createdAt: o.created_at ?? o.paid_at,
     status: o.status ?? 'PENDING',
-    total: Number(o.total_amount ?? o.total ?? o.amount ?? 0),
+    total: Number(o.total_amount ?? 0),
     currency: o.currency ?? 'KZT',
-    ticketCount: o.ticket_count ?? o.tickets_count ?? o.items?.length ?? o.quantity,
+    ticketCount: tickets.length || quantity || undefined,
   };
 }
 
 function toTicket(t: any): OrderTicket {
   return {
-    id: String(t.ticket_id ?? t.public_id ?? t.id),
-    typeName: t.ticket_type_name ?? t.ticket_type,
-    attendeeName:
-      t.attendee_name ?? ([t.first_name, t.last_name].filter(Boolean).join(' ') || undefined),
+    id: String(t.ticket_id ?? t.public_id),
+    typeName: t.ticket_type_name ?? undefined,
+    attendeeName: t.attendee_name ?? undefined,
     status: t.status ?? 'VALID',
-    qrPayload: t.qr_payload ?? t.qr_token ?? t.qr_code ?? t.qr ?? t.public_id,
+    qrPayload: t.qr_payload ?? undefined,
   };
 }
 
 export async function getOrders(): Promise<OrderSummary[]> {
   const body = await apiRequest<unknown>('/orders?limit=100&offset=0');
-  return toArray(body)
-    .map(toOrderSummary)
-    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')); // newest first
+  const list = toArray(body).map(toOrderSummary);
+
+  // safety net: if an order came without its tickets, read the title from /orders/{id}/tickets
+  await Promise.all(
+    list
+      .filter((o) => !o.eventTitle)
+      .map(async (o) => {
+        try {
+          const tickets = toArray(await apiRequest<unknown>(`/orders/${o.id}/tickets`));
+          o.eventTitle = tickets[0]?.event_title ?? '';
+        } catch {
+          // keep it empty; the screen shows the order number instead
+        }
+      }),
+  );
+
+  return list.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')); // newest first
 }
 
 export async function getOrder(orderId: string): Promise<OrderDetail> {
-  const [orderBody, ticketsBody] = await Promise.all([
-    apiRequest<any>(`/orders/${orderId}`),
-    apiRequest<unknown>(`/orders/${orderId}/tickets`).catch(() => []),
-  ]);
-  const o = orderBody?.data ?? orderBody;
-  const event = o.event ?? {};
+  const body: any = await apiRequest<any>(`/orders/${orderId}`);
+  const o = body?.data ?? body;
+
+  let rawTickets: any[] = Array.isArray(o.tickets) ? o.tickets : [];
+  if (rawTickets.length === 0) {
+    rawTickets = toArray(
+      await apiRequest<unknown>(`/orders/${orderId}/tickets`).catch(() => []),
+    );
+  }
+
+  const first = rawTickets[0] ?? {};
+  const summary = toOrderSummary({ ...o, tickets: rawTickets });
 
   return {
-    ...toOrderSummary(o),
-    eventStartsAt: event.starts_at ?? o.event_starts_at,
-    eventPlace:
-      [event.venue_name ?? o.venue_name, event.city ?? o.city].filter(Boolean).join(', ') ||
-      undefined,
-    lines: (o.items ?? o.lines ?? []).map((i: any) => ({
-      name: i.ticket_type_name ?? i.name ?? '',
+    ...summary,
+    eventStartsAt: first.event_starts_at ?? undefined,
+    eventPlace: [first.venue_name, first.city].filter(Boolean).join(', ') || undefined,
+    lines: (Array.isArray(o.items) ? o.items : []).map((i: any) => ({
+      name: i.ticket_type_name ?? '',
       quantity: Number(i.quantity ?? 1),
-      total: Number(i.total_amount ?? i.total ?? i.unit_price ?? 0),
+      total: Number(i.subtotal ?? i.final_price ?? 0),
     })),
-    tickets: toArray(ticketsBody).map(toTicket),
+    tickets: rawTickets.map(toTicket),
   };
 }
 
