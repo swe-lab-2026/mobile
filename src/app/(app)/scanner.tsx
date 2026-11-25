@@ -8,6 +8,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Platform,
   StyleSheet,
   Text,
@@ -15,7 +16,12 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ApiError } from '../../api/client';
+import {
+  admissionMessage,
+  admissionTitle,
+  classifyAdmissionError,
+  type AdmissionRejection,
+} from '../../api/admission';
 import { checkInTicket } from '../../api/events';
 import { LanguagePicker } from '../../components/LanguagePicker';
 import { Lang, useLanguage } from '../../store/language-context';
@@ -35,8 +41,15 @@ type ScanState =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'success'; ticket: CheckedInTicket }
-  | { kind: 'duplicate'; checkedInAt?: string }
-  | { kind: 'error'; message: string };
+  | {
+      kind: 'rejected';
+      reason: AdmissionRejection | 'NO_EVENT' | 'CAMERA';
+      title: string;
+      message: string;
+      checkedInAt?: string;
+      /** Set for transient failures: the payload to resubmit on retry. */
+      retryPayload?: string;
+    };
 
 function formatDateTime(value: string | null | undefined, locale: string) {
   if (!value) return null;
@@ -50,29 +63,35 @@ function formatDateTime(value: string | null | undefined, locale: string) {
   });
 }
 
-function resolveScanError(error: unknown, t: Record<string, any>): string {
-  if (error instanceof ApiError) {
-    switch (error.code) {
-      case 'INVALID_TICKET_QR':
-        return t.errInvalidTicketQr ?? 'This QR code is not a valid ticket.';
-      case 'TICKET_NOT_FOUND':
-        return t.errTicketNotFound ?? 'Ticket not found for this event.';
-      case 'TICKET_NOT_VALID':
-        return t.errTicketNotValid ?? 'This ticket is not valid (cancelled or refunded).';
-      case 'INSUFFICIENT_EVENT_PERMISSIONS':
-        return t.errInsufficientPermissions ?? 'You are not allowed to check in for this event.';
-      case 'NETWORK_ERROR':
-        return t.errNetwork ?? 'Cannot reach the server. Check your connection.';
-    }
-    return error.message;
+function bannerStyle(reason: AdmissionRejection | 'NO_EVENT' | 'CAMERA') {
+  switch (reason) {
+    case 'ALREADY_CHECKED_IN':
+    case 'CAMPAIGN_QR':
+    case 'WRONG_EVENT':
+      return styles.bannerWarn;
+    case 'NETWORK':
+      return styles.bannerNeutral;
+    default:
+      return styles.bannerError;
   }
-  return t.errNetwork ?? 'Cannot reach the server. Check your connection.';
+}
+
+function bannerIcon(reason: AdmissionRejection | 'NO_EVENT' | 'CAMERA') {
+  switch (reason) {
+    case 'ALREADY_CHECKED_IN':
+    case 'CAMPAIGN_QR':
+    case 'WRONG_EVENT':
+      return '⚠️';
+    case 'NETWORK':
+      return '📶';
+    default:
+      return '❌';
+  }
 }
 
 export default function ScannerScreen() {
   const router = useRouter();
   const { t, lang } = useLanguage();
-  const dict = t as Record<string, any>;
   const locale = LOCALES[lang];
 
   const params = useLocalSearchParams<{ eventId?: string | string[] }>();
@@ -85,50 +104,57 @@ export default function ScannerScreen() {
   const lastScanTimeRef = useRef(0);
   const busyRef = useRef(false);
 
-  const handleBarcodeScanned = useCallback(
-    async ({ data }: BarcodeScanningResult) => {
-      const payload = data?.trim();
-      if (!payload) return;
-
-      const now = Date.now();
-      if (busyRef.current || now - lastScanTimeRef.current < SCAN_COOLDOWN_MS) return;
-
+  const submit = useCallback(
+    async (payload: string) => {
       if (!eventId || !UUID_PATTERN.test(eventId)) {
-        lastScanTimeRef.current = now;
         setState({
-          kind: 'error',
-          message:
-            dict.errNoEventSelected ??
-            'No valid event selected. Open the scanner from an event.',
+          kind: 'rejected',
+          reason: 'NO_EVENT',
+          title: t.checkInFailed,
+          message: t.errNoEventSelected,
         });
         return;
       }
 
       busyRef.current = true;
-      lastScanTimeRef.current = now;
       setState({ kind: 'loading' });
 
       try {
         const ticket = await checkInTicket(eventId, payload);
         setState({ kind: 'success', ticket });
       } catch (e) {
-        if (e instanceof ApiError && e.code === 'TICKET_ALREADY_CHECKED_IN') {
-          setState({
-            kind: 'duplicate',
-            checkedInAt: e.details?.checked_in_at as string | undefined,
-          });
-        } else {
-          setState({ kind: 'error', message: resolveScanError(e, dict) });
-        }
+        const result = classifyAdmissionError(e);
+        setState({
+          kind: 'rejected',
+          reason: result.kind,
+          title: admissionTitle(result.kind, t),
+          message: admissionMessage(result, t),
+          checkedInAt: result.checkedInAt,
+          retryPayload: result.retryable ? payload : undefined,
+        });
       } finally {
         busyRef.current = false;
       }
     },
-    [eventId, dict],
+    [eventId, t],
+  );
+
+  const handleBarcodeScanned = useCallback(
+    ({ data }: BarcodeScanningResult) => {
+      const payload = data?.trim();
+      if (!payload) return;
+
+      const now = Date.now();
+      if (busyRef.current || now - lastScanTimeRef.current < SCAN_COOLDOWN_MS) return;
+      lastScanTimeRef.current = now;
+      void submit(payload);
+    },
+    [submit],
   );
 
   const resetScanner = () => {
     busyRef.current = false;
+    lastScanTimeRef.current = Date.now();
     setState({ kind: 'idle' });
   };
 
@@ -136,24 +162,26 @@ export default function ScannerScreen() {
     return (
       <SafeAreaView style={styles.center}>
         <ActivityIndicator color="#fff" style={{ marginBottom: 12 }} />
-        <Text style={styles.infoText}>
-          {dict.loadingPermissions ?? 'Loading camera permissions…'}
-        </Text>
+        <Text style={styles.infoText}>{t.loadingPermissions}</Text>
       </SafeAreaView>
     );
   }
 
   if (!permission.granted) {
+    // Once the OS stops showing the prompt, the only recovery path is Settings.
+    const blocked = !permission.canAskAgain && Platform.OS !== 'web';
     return (
       <SafeAreaView style={styles.center}>
         <Text style={styles.infoText}>
-          {dict.cameraPermissionRequired ??
-            'We need your permission to use the camera to scan QR codes.'}
+          {blocked ? t.cameraPermissionDenied : t.cameraPermissionRequired}
         </Text>
-        <TouchableOpacity style={styles.button} onPress={requestPermission}>
-          <Text style={styles.buttonText}>
-            {dict.grantPermission ?? 'Grant Permission'}
-          </Text>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={() => (blocked ? void Linking.openSettings() : void requestPermission())}>
+          <Text style={styles.buttonText}>{blocked ? t.openSettings : t.grantPermission}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.button, styles.secondaryAction]} onPress={() => router.back()}>
+          <Text style={styles.buttonText}>‹ {t.back}</Text>
         </TouchableOpacity>
       </SafeAreaView>
     );
@@ -161,7 +189,9 @@ export default function ScannerScreen() {
 
   const scanning = state.kind === 'idle';
   const duplicateTime =
-    state.kind === 'duplicate' ? formatDateTime(state.checkedInAt, locale) : null;
+    state.kind === 'rejected' && state.reason === 'ALREADY_CHECKED_IN'
+      ? formatDateTime(state.checkedInAt, locale)
+      : null;
 
   return (
     <View style={styles.container}>
@@ -177,8 +207,10 @@ export default function ScannerScreen() {
         onBarcodeScanned={scanning ? handleBarcodeScanned : undefined}
         onMountError={(e) =>
           setState({
-            kind: 'error',
-            message: e.message || (dict.cameraMountError ?? 'Could not start the camera.'),
+            kind: 'rejected',
+            reason: 'CAMERA',
+            title: t.checkInFailed,
+            message: e.message || t.cameraMountError,
           })
         }
       />
@@ -194,7 +226,7 @@ export default function ScannerScreen() {
 
       <SafeAreaView style={styles.topBar} pointerEvents="box-none" edges={['top']}>
         <View style={styles.headerLeftColumn}>
-          <Text style={styles.title}>{dict.scannerTitle ?? 'Check-in Scanner'}</Text>
+          <Text style={styles.title}>{t.scannerTitle}</Text>
           <TouchableOpacity style={styles.backButtonUnder} onPress={() => router.back()}>
             <Text style={styles.backButtonText}>‹ {t.back}</Text>
           </TouchableOpacity>
@@ -208,67 +240,57 @@ export default function ScannerScreen() {
         </View>
       </SafeAreaView>
 
-      {scanning && (
-        <Text style={styles.hintText}>
-          {dict.alignQrHint ?? 'Align the ticket QR code within the frame'}
-        </Text>
-      )}
+      {scanning && <Text style={styles.hintText}>{t.alignQrHint}</Text>}
 
       {state.kind === 'loading' && (
         <View style={styles.loadingBox}>
           <ActivityIndicator color="#fff" />
-          <Text style={styles.loadingText}>
-            {dict.checkingTicket ?? 'Checking ticket…'}
-          </Text>
+          <Text style={styles.loadingText}>{t.checkingTicket}</Text>
         </View>
       )}
 
       {state.kind === 'success' && (
         <SafeAreaView style={styles.resultCard} edges={['bottom']}>
           <View style={[styles.statusBanner, styles.bannerOk]}>
-            <Text style={styles.statusText}>✅ {dict.checkedInStatus ?? 'Checked in'}</Text>
+            <Text style={styles.statusText}>✅ {t.admittedTitle}</Text>
           </View>
           <Text style={styles.attendeeName}>
-            {state.ticket.attendeeName ?? (dict.unnamedAttendee ?? 'Attendee')}
+            {state.ticket.attendeeName ?? t.unnamedAttendee}
           </Text>
           <Text style={styles.attendeeMeta}>{state.ticket.attendeeEmail}</Text>
           <Text style={styles.attendeeMeta}>
             {state.ticket.ticketType} · #{state.ticket.orderNumber}
           </Text>
           <TouchableOpacity style={[styles.button, styles.nextButton]} onPress={resetScanner}>
-            <Text style={styles.buttonText}>{dict.scanNext ?? 'Scan Next'}</Text>
+            <Text style={styles.buttonText}>{t.scanNext}</Text>
           </TouchableOpacity>
         </SafeAreaView>
       )}
 
-      {state.kind === 'duplicate' && (
+      {state.kind === 'rejected' && (
         <SafeAreaView style={styles.resultCard} edges={['bottom']}>
-          <View style={[styles.statusBanner, styles.bannerWarn]}>
+          <View style={[styles.statusBanner, bannerStyle(state.reason)]}>
             <Text style={styles.statusText}>
-              ⚠️ {dict.alreadyCheckedIn ?? 'Already checked in'}
-            </Text>
-          </View>
-          {duplicateTime ? (
-            <Text style={styles.attendeeMeta}>
-              {dict.firstCheckIn ?? 'First check-in'}: {duplicateTime}
-            </Text>
-          ) : null}
-          <TouchableOpacity style={[styles.button, styles.nextButton]} onPress={resetScanner}>
-            <Text style={styles.buttonText}>{dict.scanNext ?? 'Scan Next'}</Text>
-          </TouchableOpacity>
-        </SafeAreaView>
-      )}
-
-      {state.kind === 'error' && (
-        <SafeAreaView style={styles.resultCard} edges={['bottom']}>
-          <View style={[styles.statusBanner, styles.bannerError]}>
-            <Text style={styles.statusText}>
-              ❌ {dict.checkInFailed ?? 'Check-in failed'}
+              {bannerIcon(state.reason)} {state.title}
             </Text>
           </View>
           <Text style={styles.attendeeMeta}>{state.message}</Text>
-          <TouchableOpacity style={[styles.button, styles.nextButton]} onPress={resetScanner}>
-            <Text style={styles.buttonText}>{t.retry}</Text>
+          {duplicateTime ? (
+            <Text style={styles.attendeeMeta}>
+              {t.firstCheckIn}: {duplicateTime}
+            </Text>
+          ) : null}
+          {state.retryPayload ? (
+            <TouchableOpacity
+              style={[styles.button, styles.nextButton, styles.retryButton]}
+              onPress={() => void submit(state.retryPayload!)}>
+              <Text style={styles.buttonText}>{t.retryCheckIn}</Text>
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity
+            style={[styles.button, state.retryPayload ? styles.secondaryAction : styles.nextButton]}
+            onPress={resetScanner}>
+            <Text style={styles.buttonText}>{t.scanNext}</Text>
           </TouchableOpacity>
         </SafeAreaView>
       )}
@@ -397,8 +419,11 @@ const styles = StyleSheet.create({
   bannerOk: { backgroundColor: '#166534' },
   bannerWarn: { backgroundColor: '#a16207' },
   bannerError: { backgroundColor: '#991b1b' },
+  bannerNeutral: { backgroundColor: '#374151' },
   statusText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   attendeeName: { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 4 },
   attendeeMeta: { color: '#d1d5db', fontSize: 14, marginTop: 2 },
   nextButton: { marginTop: 16, paddingVertical: 14, backgroundColor: '#1f2937' },
+  retryButton: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
+  secondaryAction: { marginTop: 10, paddingVertical: 12 },
 });

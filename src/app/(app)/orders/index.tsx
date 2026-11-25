@@ -23,8 +23,23 @@ export default function OrdersScreen() {
   }, []);
 
   useEffect(() => {
-    load().finally(() => setLoading(false));
-  }, [load]);
+    let active = true;
+    getOrders()
+      .then((data) => {
+        if (!active) return;
+        setOrders(data);
+        setError(false);
+      })
+      .catch(() => {
+        if (active) setError(true);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function onRefresh() {
     setRefreshing(true);

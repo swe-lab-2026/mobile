@@ -1,7 +1,6 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import {
-  Alert,
   Modal,
   Platform,
   Pressable,

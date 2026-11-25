@@ -1,5 +1,5 @@
 const API_PREFIX = '/api/v1';
-const DEFAULT_BASE_URL = 'http://130.210.14.131/api/v1';
+const LOCAL_HOSTS = /^(localhost|127\.0\.0\.1|10\.0\.2\.2|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/;
 
 let accessToken: string | null = null;
 let handlers: {
@@ -27,6 +27,14 @@ export class ApiError extends Error {
   }
 }
 
+/** Thrown when EXPO_PUBLIC_API_BASE_URL is missing or unusable for this build. */
+export class ApiConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ApiConfigError';
+  }
+}
+
 export function isDefinitiveSessionError(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 401 || error.status === 403);
 }
@@ -34,11 +42,13 @@ export function isDefinitiveSessionError(error: unknown): boolean {
 function normalizeBaseUrl(raw: string): string {
   const value = raw.trim();
   if (!value) {
-    throw new Error('EXPO_PUBLIC_API_BASE_URL is not configured.');
+    throw new ApiConfigError(
+      'EXPO_PUBLIC_API_BASE_URL is not configured. Set it in .env (development) or the build environment (demo/release).',
+    );
   }
   if (!/^https?:\/\//i.test(value)) {
-    throw new Error(
-      'EXPO_PUBLIC_API_BASE_URL must be an absolute http(s) URL, for example http://10.0.2.2:8000/api/v1.',
+    throw new ApiConfigError(
+      'EXPO_PUBLIC_API_BASE_URL must be an absolute http(s) URL, for example https://api.example.com/api/v1.',
     );
   }
 
@@ -46,9 +56,24 @@ function normalizeBaseUrl(raw: string): string {
   try {
     url = new URL(value);
   } catch {
-    throw new Error(
+    throw new ApiConfigError(
       'EXPO_PUBLIC_API_BASE_URL is not a valid URL. Configure an absolute backend URL including /api/v1.',
     );
+  }
+
+  // Release (demo) builds must talk to a deployed HTTPS API. Plain HTTP is
+  // accepted only in development builds and only for local/LAN hosts.
+  if (url.protocol === 'http:') {
+    if (!__DEV__) {
+      throw new ApiConfigError(
+        `EXPO_PUBLIC_API_BASE_URL must use HTTPS in release builds (got ${url.origin}).`,
+      );
+    }
+    if (!LOCAL_HOSTS.test(url.hostname)) {
+      throw new ApiConfigError(
+        `Plain HTTP is only allowed for local development hosts (got ${url.hostname}). Use HTTPS for deployed APIs.`,
+      );
+    }
   }
 
   const trimmedPath = url.pathname.replace(/\/+$/, '');
@@ -67,9 +92,18 @@ let baseUrl: string | null = null;
 export function getApiBaseUrl(): string {
   if (baseUrl) return baseUrl;
 
-  const raw = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || DEFAULT_BASE_URL;
-  baseUrl = normalizeBaseUrl(raw);
+  baseUrl = normalizeBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL ?? '');
   return baseUrl;
+}
+
+/** Returns a human-readable configuration problem, or null when the API URL is usable. */
+export function getApiConfigError(): string | null {
+  try {
+    getApiBaseUrl();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 interface RequestOptions extends RequestInit {
@@ -108,8 +142,10 @@ async function send(
     requestHeaders.Authorization = `Bearer ${token}`;
   }
 
+  // Resolve outside the try so configuration errors are not reported as network errors.
+  const url = `${getApiBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
   try {
-    return await fetch(`${getApiBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`, {
+    return await fetch(url, {
       ...rest,
       headers: requestHeaders,
     });

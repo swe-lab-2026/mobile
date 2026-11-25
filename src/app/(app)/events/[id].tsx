@@ -1,5 +1,5 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ApiError } from '../../../api/client';
+import { classifyAdmissionError } from '../../../api/admission';
 import { getEventAttendanceStats, getEventDetails } from '../../../api/events';
 import { EventRecord, organizerEvents } from '../../../api/organizer';
 import { authStyles, Notice, PrimaryButton } from '../../../components/AuthUI';
@@ -83,85 +83,110 @@ function InfoRow({ icon, label, value, last }: InfoRowProps) {
   );
 }
 
+type LoadState =
+  | { status: 'loading'; id: string }
+  | { status: 'ready'; id: string; event: EventDetails }
+  | { status: 'missing'; id: string }
+  | { status: 'error'; id: string; message: string };
+
 export default function EventDetailScreen() {
   const { t, lang } = useLanguage();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const { selectEvent } = useSelectedEvent();
 
-  const [event, setEvent] = useState<EventDetails | null>(null);
-  const [stats, setStats] = useState<AttendanceStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [load, setLoad] = useState<LoadState | null>(null);
+  const [stats, setStats] = useState<{ eventId: string; data: AttendanceStats } | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [managedEvent, setManagedEvent] = useState<EventRecord | null>(null);
   const [managementError, setManagementError] = useState('');
+  // Each load gets a generation number; responses from older loads (or after blur) are dropped.
+  const generation = useRef(0);
 
-  const currentEvent = id && event?.id === id ? event : null;
-  const isLoading = !!id && (loading || event?.id !== id);
   const locale = LOCALES[lang];
 
-  useEffect(() => {
-    let active = true;
+  const loadEvent = useCallback(async () => {
+    if (!id) return;
+    const gen = ++generation.current;
+    const isCurrent = () => generation.current === gen;
 
-    if (!id) {
-      return () => {
-        active = false;
-      };
+    let found: EventDetails | null;
+    try {
+      // Re-read on every focus so revoked access is detected, not just cached.
+      found = await getEventDetails(id);
+    } catch (error) {
+      if (!isCurrent()) return;
+      const result = classifyAdmissionError(error);
+      if (result.kind === 'FORBIDDEN' || result.kind === 'NOT_FOUND') {
+        setLoad({ status: 'missing', id });
+      } else {
+        setLoad({
+          status: 'error',
+          id,
+          message: result.kind === 'NETWORK' ? t.errNetwork : t.errLoadEvent,
+        });
+      }
+      return;
     }
 
-    getEventDetails(id)
-      .then((found) => {
-        if (!active) return;
-        setEvent(found);
-        setManagedEvent(null);
-        setManagementError('');
-        if (found) {
-          // Only succeeds for the event owner; others just don't see owner-only actions.
-          organizerEvents
-            .get(found.id)
-            .then((record) => {
-              if (active) setManagedEvent(record);
-            })
-            .catch(() => {});
-        }
-        setLoadError(null);
-        setLoading(false);
-        setStats(null);
-        setStatsError(false);
+    if (!isCurrent()) return;
+    if (!found) {
+      // Not in /events/assigned: deleted, or the user's assignment was revoked.
+      setLoad({ status: 'missing', id });
+      setStats(null);
+      return;
+    }
 
-        if (!found) return;
+    setLoad({ status: 'ready', id, event: found });
+    selectEvent(id);
 
-        selectEvent(id);
-        setStatsLoading(true);
-        getEventAttendanceStats(found.id)
-          .then((data) => {
-            if (active) setStats(data);
-          })
-          .catch(() => {
-            if (active) setStatsError(true);
-          })
-          .finally(() => {
-            if (active) setStatsLoading(false);
-          });
+    // Only succeeds for the event owner; others just don't see owner-only actions.
+    organizerEvents
+      .get(found.id)
+      .then((record) => {
+        if (isCurrent()) setManagedEvent(record);
       })
-      .catch((error) => {
-        if (!active) return;
-        setEvent(null);
-        setStatsError(true);
-        setLoading(false);
-        setLoadError(
-          error instanceof ApiError && error.status === 0
-            ? t.errNetwork
-            : t.errLoadEvent,
-        );
+      .catch(() => {
+        if (isCurrent()) setManagedEvent(null);
       });
 
-    return () => {
-      active = false;
-    };
+    setStatsLoading(true);
+    try {
+      const data = await getEventAttendanceStats(found.id);
+      if (isCurrent()) {
+        setStats({ eventId: found.id, data });
+        setStatsError(false);
+      }
+    } catch {
+      if (isCurrent()) setStatsError(true);
+    } finally {
+      if (isCurrent()) setStatsLoading(false);
+    }
   }, [id, selectEvent, t.errLoadEvent, t.errNetwork]);
+
+  // Runs on first mount and whenever the user returns from the scanner or
+  // participants screen, so counters always reflect the API.
+  useFocusEffect(
+    useCallback(() => {
+      void loadEvent();
+      return () => {
+        generation.current += 1;
+      };
+    }, [loadEvent]),
+  );
+
+  const retry = () => {
+    if (!id) return;
+    setLoad({ status: 'loading', id });
+    void loadEvent();
+  };
+
+  const current = load && load.id === id ? load : null;
+  const isLoading = !!id && (!current || current.status === 'loading');
+  const currentEvent = current?.status === 'ready' ? current.event : null;
+  const currentStats = stats && stats.eventId === id ? stats.data : null;
+  const ownedRecord = managedEvent && managedEvent.id === id ? managedEvent : null;
 
   const topBar = (
     <View style={styles.topBar}>
@@ -204,19 +229,31 @@ export default function EventDetailScreen() {
           <View style={styles.emptyBox}>
             <Text style={styles.emptyTitle}>{t.eventUnavailable}</Text>
             <Text style={styles.emptySubtitle}>
-              {loadError ?? t.eventNotFound}
+              {current?.status === 'error' ? current.message : t.eventNotFound}
             </Text>
+            <Pressable
+              onPress={retry}
+              style={({ pressed }) => [styles.secondaryButton, styles.retryButton, pressed && styles.pressed]}>
+              <Text style={styles.secondaryButtonText}>{t.retry}</Text>
+            </Pressable>
+            {current?.status === 'missing' ? (
+              <Pressable
+                onPress={() => router.replace('/events')}
+                style={({ pressed }) => [styles.backLink, pressed && styles.pressed]}>
+                <Text style={styles.backText}>{t.navMyEvents}</Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
       </SafeAreaView>
     );
   }
 
-  const registered = stats?.totalRegistered;
-  const checkedIn = stats?.totalCheckedIn;
+  const registered = currentStats?.totalRegistered;
+  const checkedIn = currentStats?.totalCheckedIn;
   const progress =
-    stats && stats.totalRegistered > 0
-      ? Math.min(stats.totalCheckedIn / stats.totalRegistered, 1)
+    currentStats && currentStats.totalRegistered > 0
+      ? Math.min(currentStats.totalCheckedIn / currentStats.totalRegistered, 1)
       : 0;
   const percent = Math.round(progress * 100);
 
@@ -260,19 +297,19 @@ export default function EventDetailScreen() {
             <Text style={styles.metricLabel}>{t.checkedInCount}</Text>
           </View>
           <View style={styles.metricCard}>
-            <Text style={styles.metricValue}>{stats?.remaining ?? '—'}</Text>
+            <Text style={styles.metricValue}>{currentStats?.remaining ?? '—'}</Text>
             <Text style={styles.metricLabel}>{t.remainingCount}</Text>
           </View>
         </View>
 
         {/* Progress card */}
         <View style={styles.sectionCard}>
-          {statsLoading ? (
+          {statsLoading && !currentStats ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator size="small" color="#111827" />
               <Text style={styles.mutedText}>{t.loadingAttendance}</Text>
             </View>
-          ) : stats ? (
+          ) : currentStats ? (
             <>
               <View style={styles.progressHeader}>
                 <Text style={styles.sectionTitle}>{t.checkInProgress}</Text>
@@ -282,23 +319,23 @@ export default function EventDetailScreen() {
                 <View style={[styles.progressFill, { width: `${percent}%` }]} />
               </View>
               <Text style={styles.progressMeta}>
-                {stats.totalCheckedIn} / {stats.totalRegistered} {t.attendeesCheckedIn}
+                {currentStats.totalCheckedIn} / {currentStats.totalRegistered} {t.attendeesCheckedIn}
               </Text>
 
               <View style={styles.pillsRow}>
                 <View style={styles.pill}>
                   <Text style={styles.pillText}>
-                    {t.issuedCount} {stats.totalIssued}
+                    {t.issuedCount} {currentStats.totalIssued}
                   </Text>
                 </View>
                 <View style={styles.pill}>
                   <Text style={styles.pillText}>
-                    {t.cancelledCount} {stats.cancelled}
+                    {t.cancelledCount} {currentStats.cancelled}
                   </Text>
                 </View>
                 <View style={styles.pill}>
                   <Text style={styles.pillText}>
-                    {t.refundedCount} {stats.refunded}
+                    {t.refundedCount} {currentStats.refunded}
                   </Text>
                 </View>
               </View>
@@ -350,8 +387,8 @@ export default function EventDetailScreen() {
         <View style={[styles.sectionCard, styles.manageCard]}>
           <Text style={styles.sectionTitle}>Organizer management</Text>
           <Text style={[styles.mutedText, styles.manageHint]}>
-            {managedEvent
-              ? `Status: ${managedEvent.status} · Visibility: ${managedEvent.visibility}`
+            {ownedRecord
+              ? `Status: ${ownedRecord.status} · Visibility: ${ownedRecord.visibility}`
               : 'Management actions are available to the event owner.'}
           </Text>
           {managementError ? <Notice kind="error" text={managementError} /> : null}
@@ -398,14 +435,14 @@ export default function EventDetailScreen() {
               </Pressable>
             ))}
 
-            {managedEvent ? (
+            {ownedRecord ? (
               <>
                 <PrimaryButton
-                  label={managedEvent.status === 'PUBLISHED' ? 'Unpublish event' : 'Publish event'}
+                  label={ownedRecord.status === 'PUBLISHED' ? 'Unpublish event' : 'Publish event'}
                   onPress={async () => {
                     try {
                       const updated =
-                        managedEvent.status === 'PUBLISHED'
+                        ownedRecord.status === 'PUBLISHED'
                           ? await organizerEvents.unpublish(currentEvent.id)
                           : await organizerEvents.publish(currentEvent.id);
                       setManagedEvent(updated);
@@ -591,4 +628,5 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 16, fontWeight: '600', color: '#111827', marginBottom: 4 },
   emptySubtitle: { textAlign: 'center', fontSize: 14, color: '#6b7280' },
+  retryButton: { alignSelf: 'stretch', marginTop: 16, marginBottom: 8 },
 });

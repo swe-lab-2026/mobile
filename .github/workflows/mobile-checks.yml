@@ -1,0 +1,25 @@
+name: Mobile checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      # Placeholder only: exports must build with an HTTPS URL. Demo builds set the real API.
+      EXPO_PUBLIC_API_BASE_URL: https://api.example.com/api/v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npx expo-doctor
+      - run: npm run export:android
+      - run: npm run export:ios
