@@ -1,4 +1,4 @@
-import { Redirect, Slot } from 'expo-router';
+import { Redirect, Stack } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 import { useAuth } from '../../store/auth-context';
 
@@ -17,5 +17,5 @@ export default function AppGroupLayout() {
     return <Redirect href="/login" />;
   }
 
-  return <Slot />;
+  return <Stack screenOptions={{ headerShown: false }} />;
 }

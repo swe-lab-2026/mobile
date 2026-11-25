@@ -1,4 +1,5 @@
 const API_PREFIX = '/api/v1';
+const DEFAULT_BASE_URL = 'http://130.210.14.131/api/v1';
 
 let accessToken: string | null = null;
 let handlers: {
@@ -66,13 +67,7 @@ let baseUrl: string | null = null;
 export function getApiBaseUrl(): string {
   if (baseUrl) return baseUrl;
 
-  const raw = process.env.EXPO_PUBLIC_API_BASE_URL;
-  if (!raw || !raw.trim()) {
-    throw new Error(
-      'Missing EXPO_PUBLIC_API_BASE_URL. Set it to your backend API URL including /api/v1 (for example http://10.0.2.2:8000/api/v1 on an Android emulator).',
-    );
-  }
-
+  const raw = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || DEFAULT_BASE_URL;
   baseUrl = normalizeBaseUrl(raw);
   return baseUrl;
 }
