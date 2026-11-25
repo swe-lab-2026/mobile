@@ -116,7 +116,7 @@ export default function LoginScreen() {
         returnKeyType="go"
       />
 
-      {statusMessage ? <Notice kind="success" text={statusMessage} /> : null}
+      {statusMessage ? <Notice kind="info" text={statusMessage} /> : null}
       {error ? <Notice kind="error" text={error} /> : null}
 
       {notVerified ? (
