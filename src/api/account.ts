@@ -60,8 +60,11 @@ interface OrganizerDto {
 export interface OrderSummary {
   id: string;
   number?: string;
+  eventId?: string;
   /** Empty when the order has no issued tickets yet (e.g. pending payment). */
   eventTitle: string;
+  /** Ticket types with quantities, e.g. "VIP × 2". */
+  ticketNames?: string;
   createdAt?: string;
   status: string;
   total: number;
@@ -94,11 +97,18 @@ export interface OrderDetail extends OrderSummary {
 export function toOrderSummary(o: OrderDto): OrderSummary {
   const tickets = o.tickets ?? [];
   const items = o.items ?? [];
+  // e.g. "VIP × 2, Standard × 1", shown as a chip in the order list.
+  const ticketNames = items
+    .filter((item) => item.ticket_type_name)
+    .map((item) => `${item.ticket_type_name} × ${item.quantity}`)
+    .join(', ');
   return {
     id: String(o.id ?? o.order_id),
     number: o.order_number != null ? String(o.order_number) : undefined,
+    eventId: o.event_id ? String(o.event_id) : undefined,
     // OrderResponse has no event title; every issued ticket carries it.
     eventTitle: tickets[0]?.event_title ?? '',
+    ticketNames: ticketNames || undefined,
     createdAt: o.created_at ?? o.paid_at ?? undefined,
     status: o.status,
     total: Number(o.total_amount),

@@ -63,14 +63,20 @@ export default function OrdersScreen() {
       ) : orders.length === 0 ? (
         <View style={styles.emptyBox}>
           <Text style={styles.empty}>{tx.noOrders}</Text>
-          <TouchableOpacity activeOpacity={0.85} onPress={() => router.push('/')} style={styles.button}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => router.push('/')}
+            style={styles.button}
+          >
             <Text style={styles.buttonText}>{tx.browse}</Text>
           </TouchableOpacity>
         </View>
       ) : (
         orders.map((o) => {
+          const title = o.eventTitle || (o.number ? `${tx.orderLabel} №${o.number}` : tx.orderLabel);
+
           const meta = [
-            o.number ? `${tx.orderLabel} №${o.number}` : '',
+            o.eventTitle && o.number ? `${tx.orderLabel} №${o.number}` : '',
             formatDateTime(o.createdAt),
             o.ticketCount > 0 ? `${tx.ticketsShort}: ${o.ticketCount}` : '',
           ]
@@ -86,11 +92,20 @@ export default function OrdersScreen() {
             >
               <View style={styles.row}>
                 <Text style={styles.eventTitle} numberOfLines={2}>
-                  {o.eventTitle || tx.eventLabel}
+                  {title}
                 </Text>
                 <Badge text={tx.orderStatus[o.status] ?? o.status} tone={statusTone(o.status)} />
               </View>
-              <Text style={styles.meta}>{meta}</Text>
+
+              {o.ticketNames ? (
+                <View style={styles.ticketChip}>
+                  <Text style={styles.ticketChipText} numberOfLines={2}>
+                    🎟 {o.ticketNames}
+                  </Text>
+                </View>
+              ) : null}
+
+              {meta ? <Text style={styles.meta}>{meta}</Text> : null}
               <Text style={styles.price}>
                 {o.total === 0 ? tx.free : `${o.total} ${o.currency}`}
               </Text>
@@ -114,7 +129,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  buttonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  buttonText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
 
   card: {
     backgroundColor: colors.card,
@@ -127,6 +142,15 @@ const styles = StyleSheet.create({
   },
   row: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
   eventTitle: { flex: 1, fontSize: 17, fontWeight: '700', color: colors.ink, lineHeight: 22 },
-  meta: { marginTop: 8, fontSize: 13, lineHeight: 19, color: colors.muted },
+  ticketChip: {
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: colors.brandSoft,
+  },
+  ticketChipText: { fontSize: 13, fontWeight: '600', color: colors.brandDark },
+  meta: { marginTop: 10, fontSize: 13, lineHeight: 19, color: colors.muted },
   price: { marginTop: 10, fontSize: 16, fontWeight: '800', color: colors.ink },
 });

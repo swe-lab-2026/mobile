@@ -41,6 +41,10 @@ const LOCALES: Record<Lang, string> = {
   en: 'en-GB',
 };
 const SEARCH_DEBOUNCE_MS = 400;
+/** Background refresh while the screen is open, so other staff's check-ins appear. */
+const AUTO_REFRESH_MS = 15000;
+/** Backend maximum `limit` for ticket search. */
+const MAX_SEARCH_PAGE_SIZE = 200;
 
 function initials(name?: string | null) {
   return (
@@ -212,6 +216,39 @@ export default function ParticipantsScreen() {
     [eventId, t],
   );
 
+  const searchRef = useRef(search);
+  useEffect(() => {
+    searchRef.current = search;
+  }, [search]);
+
+  /**
+   * Background refresh of the rows already on screen, so check-ins made by
+   * other staff appear without a manual refresh. It re-reads the loaded window
+   * and patches statuses in place (extra pages stay), never cancels a search
+   * the operator started, and keeps the current rows if it fails.
+   */
+  const refreshSilently = useCallback(async () => {
+    const current = searchRef.current;
+    if (!eventId || !current.query || current.loading || current.loadingMore || busyRef.current) return;
+    const seq = searchSeq.current;
+    try {
+      const page = await searchEventTickets(eventId, current.query, {
+        offset: 0,
+        limit: Math.min(Math.max(current.items.length, SEARCH_PAGE_SIZE), MAX_SEARCH_PAGE_SIZE),
+      });
+      // A newer search started meanwhile: its results win.
+      if (seq !== searchSeq.current) return;
+      const fresh = new Map(page.items.map((ticket) => [ticket.publicId, ticket]));
+      setSearch((prev) =>
+        prev.query !== current.query
+          ? prev
+          : { ...prev, items: prev.items.map((ticket) => fresh.get(ticket.publicId) ?? ticket) },
+      );
+    } catch {
+      // Silent: the visible rows stay; a manual refresh reports errors.
+    }
+  }, [eventId]);
+
   // Debounced server-side search while typing.
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -222,16 +259,23 @@ export default function ParticipantsScreen() {
 
   // On focus: re-check access, refresh authoritative stats, and re-run the
   // current search so statuses reflect check-ins made elsewhere (e.g. scanner).
+  // While the screen stays open, stats and visible rows refresh every 15 s.
   useFocusEffect(
     useCallback(() => {
       void checkAccess();
       void refreshStats();
       if (activeQuery.current) void runSearch(activeQuery.current);
+      const timer = setInterval(() => {
+        if (busyRef.current) return;
+        void refreshStats();
+        void refreshSilently();
+      }, AUTO_REFRESH_MS);
       return () => {
+        clearInterval(timer);
         searchAbort.current?.abort();
         searchSeq.current += 1;
       };
-    }, [checkAccess, refreshStats, runSearch]),
+    }, [checkAccess, refreshStats, runSearch, refreshSilently]),
   );
 
   async function onRefresh() {
