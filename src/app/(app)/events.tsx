@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAssignedEvents } from '../../api/events';
 import { AppHeader } from '../../components/AppHeader';
 import { colors, shadow } from '../../constants/theme';
+import { useAuth } from '../../store/auth-context';
 import { useLanguage } from '../../store/language-context';
 import { useSelectedEvent } from '../../store/selected-event-context';
 import { AssignedEvent } from '../../types/event';
@@ -23,6 +24,7 @@ function pad(n: number) {
 
 export default function EventsListScreen() {
   const { t } = useLanguage();
+  const { user } = useAuth();
   const { selectEvent } = useSelectedEvent();
 
   const [events, setEvents] = useState<AssignedEvent[]>([]);
@@ -40,8 +42,25 @@ export default function EventsListScreen() {
   }, []);
 
   useEffect(() => {
-    load().finally(() => setLoading(false));
-  }, [load]);
+    let active = true;
+
+    getAssignedEvents()
+      .then((data) => {
+        if (!active) return;
+        setEvents(data);
+        setError(false);
+      })
+      .catch(() => {
+        if (active) setError(true);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [user?.userId]);
 
   async function onRefresh() {
     setRefreshing(true);

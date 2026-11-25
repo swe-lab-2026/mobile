@@ -39,7 +39,9 @@
         {
           "cameraPermission": "Allow this app to access your camera to scan QR codes."
         }
-      ]
+      ],
+      "expo-status-bar",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

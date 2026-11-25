@@ -1,5 +1,5 @@
 const API_PREFIX = '/api/v1';
-const BASE_URL = 'http://130.210.14.131/api/v1';
+const DEFAULT_BASE_URL = 'http://130.210.14.131/api/v1';
 
 let accessToken: string | null = null;
 let handlers: {
@@ -34,11 +34,11 @@ export function isDefinitiveSessionError(error: unknown): boolean {
 function normalizeBaseUrl(raw: string): string {
   const value = raw.trim();
   if (!value) {
-    throw new Error('BASE_URL is not configured.');
+    throw new Error('EXPO_PUBLIC_API_BASE_URL is not configured.');
   }
   if (!/^https?:\/\//i.test(value)) {
     throw new Error(
-      'BASE_URL must be an absolute http(s) URL, for example http://130.210.14.131/api/v1.',
+      'EXPO_PUBLIC_API_BASE_URL must be an absolute http(s) URL, for example http://10.0.2.2:8000/api/v1.',
     );
   }
 
@@ -47,7 +47,7 @@ function normalizeBaseUrl(raw: string): string {
     url = new URL(value);
   } catch {
     throw new Error(
-      'BASE_URL is not a valid URL. Configure an absolute backend URL including /api/v1.',
+      'EXPO_PUBLIC_API_BASE_URL is not a valid URL. Configure an absolute backend URL including /api/v1.',
     );
   }
 
@@ -67,7 +67,8 @@ let baseUrl: string | null = null;
 export function getApiBaseUrl(): string {
   if (baseUrl) return baseUrl;
 
-  baseUrl = normalizeBaseUrl(BASE_URL);
+  const raw = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || DEFAULT_BASE_URL;
+  baseUrl = normalizeBaseUrl(raw);
   return baseUrl;
 }
 
@@ -127,6 +128,10 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   let response = await send(path, options, sentToken);
 
   if (response.status === 401 && !skipAuth) {
+    // Another request (or a login/logout) may have changed the token while
+    // this response was in flight. Retry once with the current token before
+    // refreshing or invalidating the session. If the token changed again, the
+    // response is stale and must not invalidate a newer session.
     if (sentToken !== accessToken && accessToken) {
       sentToken = accessToken;
       response = await send(path, options, sentToken);

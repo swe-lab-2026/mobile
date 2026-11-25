@@ -1,5 +1,11 @@
-import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
+import {
+  ApiError,
+  apiRequest,
+  isDefinitiveSessionError,
+  setAccessToken,
+} from './client';
 import {
   AuthTokens,
   AuthUser,
@@ -7,12 +13,6 @@ import {
   TokenResponseDto,
   UserResponseDto,
 } from '../types/auth';
-import {
-  ApiError,
-  apiRequest,
-  isDefinitiveSessionError,
-  setAccessToken,
-} from './client';
 
 const REFRESH_TOKEN_KEY = 'biletflow.auth.refresh_token';
 
@@ -65,6 +65,9 @@ function enqueueStorage(operation: () => Promise<void>): Promise<void> {
 
 async function writeStoredRefreshTokenNow(token: string): Promise<void> {
   if (Platform.OS === 'web') {
+    // SecureStore has no web implementation. sessionStorage is a deliberate,
+    // session-scoped fallback: it is cleared when the browser tab closes and
+    // is never written to persistent localStorage.
     getWebStorage()?.setItem(REFRESH_TOKEN_KEY, token);
     return;
   }
@@ -75,6 +78,7 @@ async function writeStoredRefreshTokenNow(token: string): Promise<void> {
       keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     });
   } catch {
+    // Keep the in-memory session usable if the device keystore is unavailable.
   }
 }
 
@@ -88,6 +92,7 @@ async function deleteStoredRefreshTokenNow(): Promise<void> {
     if (!(await SecureStore.isAvailableAsync())) return;
     await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
   } catch {
+    // Nothing else to clear locally.
   }
 }
 
@@ -176,6 +181,8 @@ async function performRefresh(): Promise<string> {
   }
 }
 
+// All callers share one in-flight refresh. The backend rotates refresh tokens
+// and revokes the whole family on reuse, so parallel refreshes must never race.
 export function refreshAccessToken(): Promise<string> {
   if (!refreshPromise) {
     refreshPromise = performRefresh().finally(() => {
@@ -289,5 +296,6 @@ export async function logout(): Promise<void> {
       skipAuth: true,
     });
   } catch {
+    // Local logout must succeed even when the backend is unreachable.
   }
 }
