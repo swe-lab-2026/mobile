@@ -1,9 +1,10 @@
-import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -11,6 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAssignedEvents } from '../../api/events';
+import { organizerEvents } from '../../api/organizer';
 import { AppHeader } from '../../components/AppHeader';
 import { colors, shadow } from '../../constants/theme';
 import { useAuth } from '../../store/auth-context';
@@ -22,6 +24,31 @@ function pad(n: number) {
   return String(n).padStart(2, '0');
 }
 
+const STATUS_FILTERS = ['ALL', 'DRAFT', 'PUBLISHED', 'UNPUBLISHED', 'COMPLETED', 'CANCELLED'];
+
+// Organizer-owned events plus events the user is assigned to as an admin.
+// Owned events win on duplicates because they carry the real status.
+async function loadAllEvents(): Promise<AssignedEvent[]> {
+  const [owned, assigned] = await Promise.all([
+    organizerEvents.list().catch(() => []),
+    getAssignedEvents(),
+  ]);
+  const byId = new Map<string, AssignedEvent>();
+  for (const e of assigned) byId.set(e.id, e);
+  for (const e of owned) {
+    byId.set(e.id, {
+      id: e.id,
+      name: e.title,
+      startsAt: e.starts_at,
+      endsAt: e.ends_at ?? undefined,
+      location: e.venue_name ?? undefined,
+      status: e.status,
+      timezone: e.timezone ?? undefined,
+    });
+  }
+  return [...byId.values()];
+}
+
 export default function EventsListScreen() {
   const { t } = useLanguage();
   const { user } = useAuth();
@@ -31,36 +58,41 @@ export default function EventsListScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
+  const [filter, setFilter] = useState('ALL');
 
   const load = useCallback(async () => {
     try {
-      setEvents(await getAssignedEvents());
+      setEvents(await loadAllEvents());
       setError(false);
     } catch {
       setError(true);
     }
   }, []);
 
-  useEffect(() => {
-    let active = true;
+  // Reload whenever the screen regains focus (e.g. after creating an event).
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      loadAllEvents()
+        .then((data) => {
+          if (!active) return;
+          setEvents(data);
+          setError(false);
+        })
+        .catch(() => {
+          if (active) setError(true);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
 
-    getAssignedEvents()
-      .then((data) => {
-        if (!active) return;
-        setEvents(data);
-        setError(false);
-      })
-      .catch(() => {
-        if (active) setError(true);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+      return () => {
+        active = false;
+      };
+    }, [user?.userId]),
+  );
 
-    return () => {
-      active = false;
-    };
-  }, [user?.userId]);
+  const visibleEvents = filter === 'ALL' ? events : events.filter((e) => e.status === filter);
 
   async function onRefresh() {
     setRefreshing(true);
@@ -104,6 +136,7 @@ export default function EventsListScreen() {
               {item.location}
             </Text>
           ) : null}
+          {item.status ? <Text style={styles.statusBadge}>{item.status}</Text> : null}
         </View>
 
         <Text style={styles.arrow}>›</Text>
@@ -121,7 +154,7 @@ export default function EventsListScreen() {
         </View>
       ) : (
         <FlatList
-          data={events}
+          data={visibleEvents}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           showsVerticalScrollIndicator={false}
@@ -136,6 +169,30 @@ export default function EventsListScreen() {
               {error && events.length > 0 ? (
                 <Text style={styles.errorNote}>{t.error}</Text>
               ) : null}
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => router.push('/create-event')}
+                style={styles.createButton}>
+                <Text style={styles.createText}>+ {t.createEvent}</Text>
+              </TouchableOpacity>
+
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.filterRow}>
+                {STATUS_FILTERS.map((f) => (
+                  <TouchableOpacity
+                    key={f}
+                    activeOpacity={0.8}
+                    onPress={() => setFilter(f)}
+                    style={[styles.filterChip, filter === f && styles.filterChipActive]}>
+                    <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
+                      {f === 'ALL' ? t.all : f}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
             </View>
           }
           ListEmptyComponent={
@@ -190,6 +247,40 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 17, fontWeight: '700', color: colors.ink, lineHeight: 22, marginBottom: 4 },
   cardMeta: { fontSize: 14, color: colors.muted, marginTop: 2 },
   arrow: { fontSize: 26, color: '#c4c8cf', marginLeft: 8 },
+  statusBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: colors.bg,
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.text,
+    overflow: 'hidden',
+  },
+
+  createButton: {
+    marginTop: 16,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: colors.brand,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  filterRow: { gap: 8, paddingTop: 14 },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.card,
+  },
+  filterChipActive: { backgroundColor: colors.ink, borderColor: colors.ink },
+  filterText: { fontSize: 12, fontWeight: '700', color: colors.text },
+  filterTextActive: { color: '#fff' },
 
   emptyBox: { alignItems: 'center', marginTop: 48, paddingHorizontal: 24 },
   emptyText: { fontSize: 16, color: colors.muted, textAlign: 'center', lineHeight: 22 },

@@ -33,3 +33,29 @@ export function resendVerification(email: string) {
     body: JSON.stringify({ email }),
   });
 }
+
+export interface CodeTimingResponse {
+  email: string;
+  code_expires_in: number;
+  retry_after: number;
+}
+
+export interface ResetPasswordResponse {
+  email: string;
+}
+
+export function requestPasswordReset(email: string) {
+  return apiRequest<CodeTimingResponse>('/auth/request-password-reset', {
+    method: 'POST',
+    skipAuth: true,
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function resetPassword(email: string, token: string, newPassword: string) {
+  return apiRequest<ResetPasswordResponse>('/auth/reset-password', {
+    method: 'POST',
+    skipAuth: true,
+    body: JSON.stringify({ email, token, new_password: newPassword }),
+  });
+}

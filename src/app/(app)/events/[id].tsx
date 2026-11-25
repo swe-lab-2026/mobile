@@ -2,6 +2,8 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError } from '../../../api/client';
 import { getEventAttendanceStats, getEventDetails } from '../../../api/events';
+import { EventRecord, organizerEvents } from '../../../api/organizer';
 import { authStyles, Notice, PrimaryButton } from '../../../components/AuthUI';
 import { LanguagePicker } from '../../../components/LanguagePicker';
 import { Lang, useLanguage } from '../../../store/language-context';
@@ -22,6 +25,23 @@ const LOCALES: Record<Lang, string> = {
   kk: 'kk-KZ',
   en: 'en-GB',
 };
+
+// Alert.alert with buttons is a no-op on react-native-web, so fall back to the browser dialogs.
+function notify(title: string, message: string) {
+  if (Platform.OS === 'web') window.alert(`${title}\n\n${message}`);
+  else Alert.alert(title, message);
+}
+
+function confirmAction(title: string, message: string, confirmLabel: string, onConfirm: () => void) {
+  if (Platform.OS === 'web') {
+    if (window.confirm(`${title}\n\n${message}`)) onConfirm();
+    return;
+  }
+  Alert.alert(title, message, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: confirmLabel, style: 'destructive', onPress: onConfirm },
+  ]);
+}
 
 function formatDate(value: string | undefined, locale: string) {
   if (!value) return null;
@@ -75,6 +95,8 @@ export default function EventDetailScreen() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [managedEvent, setManagedEvent] = useState<EventRecord | null>(null);
+  const [managementError, setManagementError] = useState('');
 
   const currentEvent = id && event?.id === id ? event : null;
   const isLoading = !!id && (loading || event?.id !== id);
@@ -93,6 +115,17 @@ export default function EventDetailScreen() {
       .then((found) => {
         if (!active) return;
         setEvent(found);
+        setManagedEvent(null);
+        setManagementError('');
+        if (found) {
+          // Only succeeds for the event owner; others just don't see owner-only actions.
+          organizerEvents
+            .get(found.id)
+            .then((record) => {
+              if (active) setManagedEvent(record);
+            })
+            .catch(() => {});
+        }
         setLoadError(null);
         setLoading(false);
         setStats(null);
@@ -312,6 +345,111 @@ export default function EventDetailScreen() {
             <Text style={styles.secondaryButtonText}>{t.viewParticipants}</Text>
           </Pressable>
         </View>
+
+        {/* Organizer management */}
+        <View style={[styles.sectionCard, styles.manageCard]}>
+          <Text style={styles.sectionTitle}>Organizer management</Text>
+          <Text style={[styles.mutedText, styles.manageHint]}>
+            {managedEvent
+              ? `Status: ${managedEvent.status} · Visibility: ${managedEvent.visibility}`
+              : 'Management actions are available to the event owner.'}
+          </Text>
+          {managementError ? <Notice kind="error" text={managementError} /> : null}
+
+          <View style={styles.actions}>
+            {[
+              {
+                label: 'Edit event',
+                onPress: () =>
+                  router.push({ pathname: '/edit-event', params: { id: currentEvent.id } }),
+              },
+              {
+                label: 'Manage ticket types & inventory',
+                onPress: () =>
+                  router.push({ pathname: '/tickets', params: { eventId: currentEvent.id } }),
+              },
+              {
+                label: 'Manage event administrators',
+                onPress: () =>
+                  router.push({ pathname: '/admins', params: { eventId: currentEvent.id } }),
+              },
+              {
+                label: 'Publishing checklist',
+                onPress: async () => {
+                  try {
+                    const p = await organizerEvents.preview(currentEvent.id);
+                    notify(
+                      p.publish_ready ? 'Ready to publish' : 'Publishing checklist',
+                      p.validation_errors.length
+                        ? p.validation_errors.join('\n')
+                        : 'All publishing requirements are satisfied.',
+                    );
+                  } catch (e: any) {
+                    setManagementError(e?.message ?? 'Could not load publishing checklist');
+                  }
+                },
+              },
+            ].map((action) => (
+              <Pressable
+                key={action.label}
+                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+                onPress={action.onPress}>
+                <Text style={styles.secondaryButtonText}>{action.label}</Text>
+              </Pressable>
+            ))}
+
+            {managedEvent ? (
+              <>
+                <PrimaryButton
+                  label={managedEvent.status === 'PUBLISHED' ? 'Unpublish event' : 'Publish event'}
+                  onPress={async () => {
+                    try {
+                      const updated =
+                        managedEvent.status === 'PUBLISHED'
+                          ? await organizerEvents.unpublish(currentEvent.id)
+                          : await organizerEvents.publish(currentEvent.id);
+                      setManagedEvent(updated);
+                      setManagementError('');
+                    } catch (e: any) {
+                      setManagementError(e?.message ?? 'Could not update publishing status');
+                    }
+                  }}
+                />
+                <Pressable
+                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+                  onPress={() =>
+                    confirmAction('Duplicate event?', 'Create a draft copy of this event?', 'Duplicate', async () => {
+                      try {
+                        const copy = await organizerEvents.duplicate(currentEvent.id);
+                        router.replace({ pathname: '/events/[id]', params: { id: copy.id } });
+                      } catch (e: any) {
+                        setManagementError(e?.message ?? 'Could not duplicate event');
+                      }
+                    })
+                  }>
+                  <Text style={styles.secondaryButtonText}>Duplicate event</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.secondaryButton,
+                    styles.dangerButton,
+                    pressed && styles.pressed,
+                  ]}
+                  onPress={() =>
+                    confirmAction('Cancel event?', 'This changes the event status to CANCELLED.', 'Cancel event', async () => {
+                      try {
+                        setManagedEvent(await organizerEvents.cancel(currentEvent.id));
+                      } catch (e: any) {
+                        setManagementError(e?.message ?? 'Could not cancel event');
+                      }
+                    })
+                  }>
+                  <Text style={[styles.secondaryButtonText, styles.dangerText]}>Cancel event</Text>
+                </Pressable>
+              </>
+            ) : null}
+          </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -363,6 +501,10 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  manageCard: { marginTop: 18 },
+  manageHint: { marginTop: 4, marginBottom: 12 },
+  dangerButton: { borderColor: '#fecaca' },
+  dangerText: { color: '#dc2626' },
   progressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',

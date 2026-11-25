@@ -133,6 +133,10 @@ export default function LoginScreen() {
         </View>
       ) : null}
 
+      <View style={{ marginBottom: 14, alignItems: 'flex-end' }}>
+        <LinkText label={t.forgotPassword} onPress={() => router.push('/forgot-password')} />
+      </View>
+
       <PrimaryButton label={t.login} onPress={handleSubmit} loading={submitting} />
 
       <SwitchRow
