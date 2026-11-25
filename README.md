@@ -94,9 +94,12 @@ event and check-in permissions.
 The participant screen is intentionally search-first: the backend requires a
 non-empty search term to list tickets for event staff. It does not fabricate an
 attendee list. Reversal is checked by the server, and a `403` response is shown
-to the user. The Undo (reverse check-in) action is shown only to users the
-backend would allow (event owner, `PLATFORM_ADMIN`, or `EVENT_ADMIN` when the API
-reports `staff_role`/`can_reverse_check_in` on `/events/assigned`).
+to the user. The Undo (reverse check-in) action follows the caller-specific
+`can_reverse_check_in` flag from `GET /api/v1/events/assigned` (true for the event
+owner, `PLATFORM_ADMIN` and assigned `EVENT_ADMIN`; false for `CHECK_IN_STAFF`).
+The backend still authorizes every reversal request. Against an older backend
+without the flag, the app falls back to showing Undo only to owners and platform
+admins.
 
 Admission results are mapped from `error.details.admission_status`, so the
 scanner and manual admission show distinct messages for admitted, invalid QR,
@@ -117,7 +120,10 @@ EXPO_PUBLIC_API_BASE_URL=https://api.example.com/api/v1 npm run export:android
 EXPO_PUBLIC_API_BASE_URL=https://api.example.com/api/v1 npm run export:ios
 ```
 
-`npm run check` runs typecheck, lint and doctor. The same steps, plus a clean
+Expo type declarations come from `"types": ["expo/types"]` in `tsconfig.json`,
+so `npm run typecheck` works from a clean checkout without the generated
+`expo-env.d.ts`. `npm run doctor` runs `expo-doctor` through `npx` (it is not a
+project dependency). `npm run check` runs typecheck, lint and doctor. The same steps, plus a clean
 `npm ci` and both platform exports, run in `.github/workflows/mobile-checks.yml`.
 
 ## Learn more
