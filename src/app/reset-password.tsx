@@ -2,7 +2,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { registrationApi } from '../api/registration';
+import { resetPassword } from '../api/registration';
 
 export default function ResetPasswordScreen() {
   const { email: initialEmail = '' } = useLocalSearchParams<{ email: string }>();
@@ -26,7 +26,7 @@ export default function ResetPasswordScreen() {
     setError('');
 
     try {
-      await registrationApi.reset(trimmedEmail, trimmedToken, password);
+      await resetPassword(trimmedEmail, trimmedToken, password);
       router.replace('/login');
     } catch (e: unknown) {
       const errorMessage =

@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { registrationApi } from '../api/registration';
+import { requestPasswordReset } from '../api/registration';
 
 export default function ForgotPasswordScreen() {
   const [email, setEmail] = useState('');
@@ -20,7 +20,7 @@ export default function ForgotPasswordScreen() {
     setBusy(true);
 
     try {
-      await registrationApi.requestReset(trimmedEmail);
+      await requestPasswordReset(trimmedEmail);
       router.push({
         pathname: '../reset-password',
         params: { email: trimmedEmail },

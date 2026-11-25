@@ -1,23 +1,37 @@
 import { apiRequest } from './client';
 
-export interface RegisterPayload {
+export function registerUser(input: {
   email: string;
   password: string;
-  first_name: string;
-  last_name: string;
+  firstName: string;
+  lastName: string;
+}) {
+  return apiRequest<unknown>('/auth/register', {
+    method: 'POST',
+    skipAuth: true,
+    body: JSON.stringify({
+      email: input.email,
+      password: input.password,
+      first_name: input.firstName,
+      last_name: input.lastName,
+    }),
+  });
 }
 
-export interface RegisterResponse {
-  email: string;
-  first_name: string;
-  last_name: string;
-  email_verified: boolean;
-  code_expires_in: number;
+export function verifyEmail(email: string, code: string) {
+  return apiRequest<unknown>('/auth/verify-email', {
+    method: 'POST',
+    skipAuth: true,
+    body: JSON.stringify({ email, code }),
+  });
 }
 
-export interface VerifyEmailResponse {
-  email: string;
-  email_verified: boolean;
+export function resendVerification(email: string) {
+  return apiRequest<unknown>('/auth/resend-verification', {
+    method: 'POST',
+    skipAuth: true,
+    body: JSON.stringify({ email }),
+  });
 }
 
 export interface CodeTimingResponse {
@@ -30,44 +44,18 @@ export interface ResetPasswordResponse {
   email: string;
 }
 
-export const registrationApi = {
-  register(body: RegisterPayload) {
-    return apiRequest<RegisterResponse>('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(body),
-      skipAuth: true,
-    });
-  },
+export function requestPasswordReset(email: string) {
+  return apiRequest<CodeTimingResponse>('/auth/request-password-reset', {
+    method: 'POST',
+    skipAuth: true,
+    body: JSON.stringify({ email }),
+  });
+}
 
-  verify(email: string, code: string) {
-    return apiRequest<VerifyEmailResponse>('/auth/verify-email', {
-      method: 'POST',
-      body: JSON.stringify({ email, code }),
-      skipAuth: true,
-    });
-  },
-
-  resend(email: string) {
-    return apiRequest<CodeTimingResponse>('/auth/resend-verification', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-      skipAuth: true,
-    });
-  },
-
-  requestReset(email: string) {
-    return apiRequest<CodeTimingResponse>('/auth/request-password-reset', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-      skipAuth: true,
-    });
-  },
-
-  reset(email: string, token: string, new_password: string) {
-    return apiRequest<ResetPasswordResponse>('/auth/reset-password', {
-      method: 'POST',
-      body: JSON.stringify({ email, token, new_password }),
-      skipAuth: true,
-    });
-  },
-};
+export function resetPassword(email: string, token: string, newPassword: string) {
+  return apiRequest<ResetPasswordResponse>('/auth/reset-password', {
+    method: 'POST',
+    skipAuth: true,
+    body: JSON.stringify({ email, token, new_password: newPassword }),
+  });
+}

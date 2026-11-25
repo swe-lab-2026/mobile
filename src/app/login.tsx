@@ -1,19 +1,21 @@
-import { useState } from 'react';
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
 import { Redirect, router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useState } from 'react';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { ApiError } from '../api/client';
+import {
+  authErrorMessage,
+  AuthLayout,
+  authStyles,
+  Field,
+  LinkText,
+  Notice,
+  PrimaryButton,
+  SwitchRow,
+} from '../components/AuthUI';
 import { useAuth } from '../store/auth-context';
+import { useLanguage } from '../store/language-context';
 
-function loginErrorMessage(error: unknown): string {
+function resolveLoginError(error: unknown, t: ReturnType<typeof useLanguage>['t']): string {
   if (error instanceof ApiError) {
     switch (error.code) {
       case 'INVALID_CREDENTIALS':
@@ -26,35 +28,47 @@ function loginErrorMessage(error: unknown): string {
         return 'Too many failed attempts. Please try again later.';
       case 'NETWORK_ERROR':
         return 'Cannot reach the server. Check your connection and API URL.';
-      default:
-        return error.message;
     }
   }
-  return 'Something went wrong. Please try again.';
+  return authErrorMessage(error, t);
 }
 
 export default function LoginScreen() {
   const { login, isAuthenticated, isInitializing, initializationError } = useAuth();
+  const { t } = useLanguage();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [notVerified, setNotVerified] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  function goBack() {
+    if (router.canGoBack()) router.back();
+    else router.replace('/events');
+  }
 
   async function handleSubmit() {
     if (submitting) return;
 
+    setError(null);
+    setStatusMessage(null);
+    setNotVerified(false);
+
     if (!email.trim() || !password) {
-      setError('Enter your email and password.');
+      setError(t.errFields);
       return;
     }
 
-    setError(null);
     setSubmitting(true);
     try {
       await login(email.trim(), password);
+      setStatusMessage('Logged in');
       router.replace('/events');
     } catch (err) {
-      setError(loginErrorMessage(err));
+      setNotVerified((err as any)?.code === 'EMAIL_NOT_VERIFIED');
+      setError(resolveLoginError(err, t));
     } finally {
       setSubmitting(false);
     }
@@ -62,7 +76,7 @@ export default function LoginScreen() {
 
   if (isInitializing) {
     return (
-      <View className="flex-1 items-center justify-center bg-white">
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator />
       </View>
     );
@@ -73,56 +87,63 @@ export default function LoginScreen() {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
-      <KeyboardAvoidingView
-        className="flex-1"
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View className="flex-1 justify-center gap-3 p-6">
-          <Text className="text-center text-3xl font-semibold">Sign In</Text>
+    <AuthLayout onBack={goBack}>
+      <Text style={authStyles.title}>{t.loginTitle}</Text>
+      <Text style={authStyles.subtitle}>{t.loginSubtitle}</Text>
 
-          {initializationError ? (
-            <Text className="text-center text-sm text-amber-600">{initializationError}</Text>
-          ) : null}
+      {initializationError ? <Notice kind="error" text={initializationError} /> : null}
 
-          <TextInput
-            className="rounded-lg border border-gray-300 p-3 text-base"
-            placeholder="Email"
-            autoCapitalize="none"
-            autoComplete="email"
-            keyboardType="email-address"
-            value={email}
-            onChangeText={setEmail}
-            editable={!submitting}
+      <Field
+        label={t.email}
+        placeholder="name@example.com"
+        value={email}
+        onChangeText={setEmail}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="email-address"
+        autoComplete="email"
+      />
+      <Field
+        label={t.password}
+        placeholder="••••••••"
+        value={password}
+        onChangeText={setPassword}
+        secure
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="password"
+        onSubmitEditing={handleSubmit}
+        returnKeyType="go"
+      />
+
+      {statusMessage ? <Notice kind="success" text={statusMessage} /> : null}
+      {error ? <Notice kind="error" text={error} /> : null}
+
+      {notVerified ? (
+        <View style={{ marginBottom: 14 }}>
+          <LinkText
+            label={t.verifyNow}
+            onPress={() =>
+              router.push({
+                pathname: '/register',
+                params: { email: email.trim(), verify: '1' },
+              })
+            }
           />
-          <TextInput
-            className="rounded-lg border border-gray-300 p-3 text-base"
-            placeholder="Password"
-            secureTextEntry
-            autoComplete="current-password"
-            value={password}
-            onChangeText={setPassword}
-            editable={!submitting}
-            onSubmitEditing={handleSubmit}
-          />
-
-          {error ? <Text className="text-center text-red-600">{error}</Text> : null}
-
-          <Pressable
-            className={`mt-2 items-center rounded-lg p-3.5 ${
-              submitting ? 'bg-gray-400' : 'bg-black'
-            }`}
-            onPress={handleSubmit}
-            disabled={submitting}>
-            {submitting ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text className="text-lg font-semibold text-white">Log In</Text>
-            )}
-          </Pressable>
-          <Pressable onPress={() => router.push('/register')}><Text className="mt-3 text-center text-blue-700">Create an account</Text></Pressable>
-          <Pressable onPress={() => router.push('/forgot-password')}><Text className="mt-1 text-center text-slate-500">Forgot password?</Text></Pressable>
         </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+      ) : null}
+
+      <View style={{ marginBottom: 14, alignItems: 'flex-end' }}>
+        <LinkText label={t.forgotPassword} onPress={() => router.push('/forgot-password')} />
+      </View>
+
+      <PrimaryButton label={t.login} onPress={handleSubmit} loading={submitting} />
+
+      <SwitchRow
+        text={t.noAccount}
+        link={t.register}
+        onPress={() => router.push('/register')}
+      />
+    </AuthLayout>
   );
 }

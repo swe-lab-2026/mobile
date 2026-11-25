@@ -192,3 +192,55 @@ export async function reverseCheckInTicket(
   );
   return toCheckedInTicket(dto);
 }
+
+interface CatalogEventDto {
+  id: string;
+  title: string;
+  visibility: string;
+  status: string;
+  starts_at: string;
+  ends_at: string;
+  venue_name: string | null;
+  city: string | null;
+  timezone: string;
+  capacity: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CatalogEvent {
+  id: string;
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  venueName?: string;
+  city?: string;
+  timezone: string;
+}
+
+export async function getCatalogEvents(): Promise<CatalogEvent[]> {
+  const all: CatalogEvent[] = [];
+
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    const page = await apiRequest<CatalogEventDto[]>(
+      `/events/catalog?limit=${PAGE_SIZE}&offset=${offset}`,
+      { skipAuth: true }
+    );
+
+    all.push(
+      ...page.map((e) => ({
+        id: e.id,
+        title: e.title,
+        startsAt: e.starts_at,
+        endsAt: e.ends_at,
+        venueName: e.venue_name ?? undefined,
+        city: e.city ?? undefined,
+        timezone: e.timezone,
+      }))
+    );
+
+    if (page.length < PAGE_SIZE) break;
+  }
+
+  return all;
+}

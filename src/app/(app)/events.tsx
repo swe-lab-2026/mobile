@@ -1,304 +1,297 @@
-
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
-  Pressable,
   RefreshControl,
+  ScrollView,
+  StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-
-import { ApiError } from '../../api/client';
 import { getAssignedEvents } from '../../api/events';
-import { organizerEvents, EventRecord } from '../../api/organizer';
-import { Action, Busy, Card, Page } from '../../components/organizer-ui';
+import { organizerEvents } from '../../api/organizer';
+import { AppHeader } from '../../components/AppHeader';
+import { colors, shadow } from '../../constants/theme';
 import { useAuth } from '../../store/auth-context';
+import { useLanguage } from '../../store/language-context';
 import { useSelectedEvent } from '../../store/selected-event-context';
+import { AssignedEvent } from '../../types/event';
 
-const filters = [
-  'ALL',
-  'DRAFT',
-  'PUBLISHED',
-  'UNPUBLISHED',
-  'COMPLETED',
-  'CANCELLED',
-];
-
-function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.code === 'NETWORK_ERROR') {
-      return 'Cannot reach the server. Check your connection.';
-    }
-    return error.message;
-  }
-
-  return 'Could not load your events.';
+function pad(n: number) {
+  return String(n).padStart(2, '0');
 }
 
-function formatDate(value: string) {
-  const date = new Date(value);
+const STATUS_FILTERS = ['ALL', 'DRAFT', 'PUBLISHED', 'UNPUBLISHED', 'COMPLETED', 'CANCELLED'];
 
-  if (isNaN(date.getTime())) {
-    return 'Date not available';
+// Organizer-owned events plus events the user is assigned to as an admin.
+// Owned events win on duplicates because they carry the real status.
+async function loadAllEvents(): Promise<AssignedEvent[]> {
+  const [owned, assigned] = await Promise.all([
+    organizerEvents.list().catch(() => []),
+    getAssignedEvents(),
+  ]);
+  const byId = new Map<string, AssignedEvent>();
+  for (const e of assigned) byId.set(e.id, e);
+  for (const e of owned) {
+    byId.set(e.id, {
+      id: e.id,
+      name: e.title,
+      startsAt: e.starts_at,
+      endsAt: e.ends_at ?? undefined,
+      location: e.venue_name ?? undefined,
+      status: e.status,
+      timezone: e.timezone ?? undefined,
+    });
   }
-
-  return date.toLocaleDateString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
+  return [...byId.values()];
 }
 
 export default function EventsListScreen() {
-  const { logout, user } = useAuth();
+  const { t } = useLanguage();
+  const { user } = useAuth();
   const { selectEvent } = useSelectedEvent();
 
-  const [events, setEvents] = useState<EventRecord[]>([]);
-  const [filter, setFilter] = useState('ALL');
+  const [events, setEvents] = useState<AssignedEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  const [filter, setFilter] = useState('ALL');
 
-  // Load organizer-owned events and events assigned to the admin.
   const load = useCallback(async () => {
     try {
-      let ownEvents: EventRecord[] = [];
-
-      // Event admins might not have access to organizer-owned events.
-      try {
-        ownEvents = await organizerEvents.list();
-      } catch {
-        ownEvents = [];
-      }
-
-      const assignedEvents = await getAssignedEvents();
-
-      // Convert assigned events into the organizer event format.
-      const mappedAssignedEvents = assignedEvents.map((event) => ({
-        id: event.id,
-        title: event.name,
-        status: event.status ?? 'ASSIGNED',
-        visibility: 'PRIVATE',
-        starts_at: event.startsAt,
-        ends_at: event.endsAt ?? event.startsAt,
-        venue_name: event.location ?? null,
-        city: null,
-        timezone: event.timezone ?? 'Asia/Almaty',
-        capacity: null,
-        created_at: '',
-        updated_at: '',
-        owner_user_id: '',
-        description: null,
-        category: null,
-        country_code: 'KZ',
-        venue_address: null,
-        registration_starts_at: null,
-        registration_ends_at: null,
-        refund_policy: null,
-        images: [],
-        latitude: null,
-        longitude: null,
-        published_at: null,
-      })) as unknown as EventRecord[];
-
-      // Combine both lists and remove duplicate events.
-      const allEvents = new Map<string, EventRecord>();
-
-      [...ownEvents, ...mappedAssignedEvents].forEach((event) => {
-        allEvents.set(event.id, event);
-      });
-
-      setEvents([...allEvents.values()]);
-      setError(null);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setEvents(await loadAllEvents());
+      setError(false);
+    } catch {
+      setError(true);
     }
   }, []);
 
-  // Reload events whenever the user returns to this screen.
+  // Reload whenever the screen regains focus (e.g. after creating an event).
   useFocusEffect(
     useCallback(() => {
-      load();
-    }, [load])
+      let active = true;
+      loadAllEvents()
+        .then((data) => {
+          if (!active) return;
+          setEvents(data);
+          setError(false);
+        })
+        .catch(() => {
+          if (active) setError(true);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+
+      return () => {
+        active = false;
+      };
+    }, [user?.userId]),
   );
 
-  // Filter events by status.
-  const visibleEvents =
-    filter === 'ALL'
-      ? events
-      : events.filter((event) => event.status === filter);
+  const visibleEvents = filter === 'ALL' ? events : events.filter((e) => e.status === filter);
 
   async function onRefresh() {
     setRefreshing(true);
     await load();
+    setRefreshing(false);
   }
 
   async function retry() {
     setLoading(true);
     await load();
+    setLoading(false);
   }
 
-  async function handleLogout() {
-    await logout();
-    router.replace('/login');
-  }
-
-  // Preserve the selected-event context used by the scanner.
   function openEvent(eventId: string) {
     selectEvent(eventId);
-
-    router.push({
-      pathname: '/events/[id]',
-      params: { id: eventId },
-    });
+    router.push({ pathname: '/events/[id]', params: { id: eventId } });
   }
 
-  if (loading) {
-    return <Busy />;
+  function renderItem({ item }: { item: AssignedEvent }) {
+    const d = new Date(item.startsAt);
+    const valid = !isNaN(d.getTime());
+
+    return (
+      <TouchableOpacity activeOpacity={0.8} onPress={() => openEvent(item.id)} style={styles.card}>
+        <View style={styles.dateBox}>
+          <Text style={styles.dateDay}>{valid ? d.getDate() : '–'}</Text>
+          <Text style={styles.dateMonth}>{valid ? t.months[d.getMonth()] : ''}</Text>
+        </View>
+
+        <View style={styles.cardBody}>
+          <Text style={styles.cardTitle} numberOfLines={2}>
+            {item.name}
+          </Text>
+          {valid ? (
+            <Text style={styles.cardMeta}>
+              {t.days[d.getDay()]} {pad(d.getHours())}:{pad(d.getMinutes())}
+            </Text>
+          ) : null}
+          {item.location ? (
+            <Text style={styles.cardMeta} numberOfLines={1}>
+              {item.location}
+            </Text>
+          ) : null}
+          {item.status ? <Text style={styles.statusBadge}>{item.status}</Text> : null}
+        </View>
+
+        <Text style={styles.arrow}>›</Text>
+      </TouchableOpacity>
+    );
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-slate-50">
-      <Page
-        title="Events"
-        subtitle={`Organizer dashboard${
-          user?.email ? ` · ${user.email}` : ''
-        }`}
-      >
-        <View className="px-4">
-          {/* Dashboard actions */}
-          <View className="mb-3 flex-row">
-            <View className="flex-1">
-              <Action
-                label="＋ Create event"
-                onPress={() => router.push('/create-event')}
-              />
-            </View>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
+      <AppHeader />
 
-            <View className="w-2" />
-
-            <View className="flex-1">
-              <Action
-                label="Profile"
-                kind="secondary"
-                onPress={() => router.push('/profile')}
-              />
-            </View>
-          </View>
-
-          {/* Event status filters */}
-          <View className="mb-3 flex-row flex-wrap">
-            {filters.map((status) => (
-              <Pressable
-                key={status}
-                onPress={() => setFilter(status)}
-                className={`mb-2 mr-2 rounded-full px-3 py-2 ${
-                  filter === status
-                    ? 'bg-blue-600'
-                    : 'border border-slate-200 bg-white'
-                }`}
-              >
-                <Text
-                  className={`text-xs font-semibold ${
-                    filter === status
-                      ? 'text-white'
-                      : 'text-slate-600'
-                  }`}
-                >
-                  {status === 'ALL'
-                    ? 'All'
-                    : status.replace('_', ' ')}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          {error ? (
-            <Text className="mb-3 text-red-600">
-              {error}
-            </Text>
-          ) : null}
+      {loading ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={colors.brand} />
         </View>
-
-        {/* Events list */}
+      ) : (
         <FlatList
           data={visibleEvents}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{
-            paddingHorizontal: 16,
-            paddingBottom: 32,
-          }}
+          renderItem={renderItem}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContent}
           refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-            />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />
+          }
+          ListHeaderComponent={
+            <View style={styles.hero}>
+              <Text style={styles.title}>{t.navMyEvents}</Text>
+              <Text style={styles.subtitle}>{t.myEventsSubtitle}</Text>
+              {error && events.length > 0 ? (
+                <Text style={styles.errorNote}>{t.error}</Text>
+              ) : null}
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => router.push('/create-event')}
+                style={styles.createButton}>
+                <Text style={styles.createText}>+ {t.createEvent}</Text>
+              </TouchableOpacity>
+
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.filterRow}>
+                {STATUS_FILTERS.map((f) => (
+                  <TouchableOpacity
+                    key={f}
+                    activeOpacity={0.8}
+                    onPress={() => setFilter(f)}
+                    style={[styles.filterChip, filter === f && styles.filterChipActive]}>
+                    <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
+                      {f === 'ALL' ? t.all : f}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
           }
           ListEmptyComponent={
-            <View className="py-10">
-              <Text className="text-center text-slate-500">
-                {error
-                  ? 'Could not load events. Please try again.'
-                  : 'No events in this category.'}
-              </Text>
-
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyText}>{error ? t.error : t.empty}</Text>
               {error ? (
-                <Pressable
-                  onPress={retry}
-                  className="mt-4 self-center rounded-lg bg-blue-600 px-5 py-2.5"
-                >
-                  <Text className="font-semibold text-white">
-                    Try again
-                  </Text>
-                </Pressable>
+                <TouchableOpacity activeOpacity={0.8} onPress={retry} style={styles.retryButton}>
+                  <Text style={styles.retryText}>{t.retry}</Text>
+                </TouchableOpacity>
               ) : null}
             </View>
           }
-          renderItem={({ item }) => (
-            <Pressable onPress={() => openEvent(item.id)}>
-              <Card>
-                <View className="flex-row items-start justify-between">
-                  <Text className="mr-2 flex-1 text-lg font-bold text-slate-900">
-                    {item.title}
-                  </Text>
-
-                  <Text className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-700">
-                    {item.status}
-                  </Text>
-                </View>
-
-                <Text className="mt-2 text-sm text-slate-500">
-                  {formatDate(item.starts_at)}
-                </Text>
-
-                <Text className="mt-1 text-sm text-slate-500">
-                  {[item.venue_name, item.city]
-                    .filter(Boolean)
-                    .join(' · ') || 'Location not set'}
-                </Text>
-
-                <Text className="mt-3 text-sm font-semibold text-blue-700">
-                  Manage event →
-                </Text>
-              </Card>
-            </Pressable>
-          )}
         />
-
-        {/* Logout */}
-        <View className="px-4 pb-2">
-          <Action
-            label="Log out"
-            kind="secondary"
-            onPress={handleLogout}
-          />
-        </View>
-      </Page>
+      )}
     </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.bg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  listContent: { paddingHorizontal: 16, paddingBottom: 24 },
+
+  hero: { paddingTop: 28, paddingBottom: 20 },
+  title: { fontSize: 30, fontWeight: '800', letterSpacing: -0.8, color: colors.ink },
+  subtitle: { marginTop: 8, fontSize: 15, lineHeight: 22, color: colors.muted },
+  errorNote: { marginTop: 12, fontSize: 14, color: colors.danger },
+
+  card: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.card,
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#eef0f3',
+    ...shadow,
+  },
+  dateBox: {
+    width: 64,
+    height: 72,
+    borderRadius: 16,
+    backgroundColor: colors.brandSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+  },
+  dateDay: { fontSize: 26, fontWeight: '800', color: colors.brandDark, lineHeight: 30 },
+  dateMonth: { fontSize: 11, fontWeight: '800', color: colors.brandDark, letterSpacing: 0.6 },
+  cardBody: { flex: 1 },
+  cardTitle: { fontSize: 17, fontWeight: '700', color: colors.ink, lineHeight: 22, marginBottom: 4 },
+  cardMeta: { fontSize: 14, color: colors.muted, marginTop: 2 },
+  arrow: { fontSize: 26, color: '#c4c8cf', marginLeft: 8 },
+  statusBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: colors.bg,
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.text,
+    overflow: 'hidden',
+  },
+
+  createButton: {
+    marginTop: 16,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: colors.brand,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  filterRow: { gap: 8, paddingTop: 14 },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.card,
+  },
+  filterChipActive: { backgroundColor: colors.ink, borderColor: colors.ink },
+  filterText: { fontSize: 12, fontWeight: '700', color: colors.text },
+  filterTextActive: { color: '#fff' },
+
+  emptyBox: { alignItems: 'center', marginTop: 48, paddingHorizontal: 24 },
+  emptyText: { fontSize: 16, color: colors.muted, textAlign: 'center', lineHeight: 22 },
+  retryButton: {
+    marginTop: 18,
+    height: 46,
+    paddingHorizontal: 24,
+    borderRadius: 14,
+    backgroundColor: colors.ink,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  retryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+});

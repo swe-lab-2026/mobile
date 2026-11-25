@@ -1,173 +1,242 @@
-import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Pressable, ScrollView, Text } from 'react-native';
-import { OrganizerProfile, profileApi } from '../../api/organizer';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import {
-  Action,
-  Busy,
-  Card,
-  Field,
-  Notice,
-  Page,
-} from '../../components/organizer-ui';
-import { useAuth } from '../../store/auth-context';
+    getMe,
+    getOrganizer,
+    saveOrganizer,
+    savePayoutAccount,
+    updateMe,
+} from '../../api/account';
+import { authErrorMessage, Field, Notice, PrimaryButton } from '../../components/AuthUI';
+import { Badge, Card, Screen, statusTone } from '../../components/Screen';
+import { colors } from '../../constants/theme';
+import { useLanguage } from '../../store/language-context';
+import { useTx } from '../../store/screen-texts';
+
+type Msg = { kind: 'error' | 'info'; text: string } | null;
 
 export default function ProfileScreen() {
-  const { user } = useAuth();
-
-  // Account state
-  const [firstName, setFirstName] = useState(user?.firstName ?? '');
-  const [lastName, setLastName] = useState(user?.lastName ?? '');
-
-  // Organizer profile state
-  const [profile, setProfile] = useState<OrganizerProfile | null>(null);
+  const { t } = useLanguage();
+  const { tx } = useTx();
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [email, setEmail] = useState('');
+  const [verified, setVerified] = useState(false);
+  const [accountMsg, setAccountMsg] = useState<Msg>(null);
+  const [savingAccount, setSavingAccount] = useState(false);
+  const [orgExists, setOrgExists] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [legalName, setLegalName] = useState('');
-  const [contactEmail, setContactEmail] = useState(user?.email ?? '');
+  const [contactEmail, setContactEmail] = useState('');
   const [contactPhone, setContactPhone] = useState('');
-  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [verification, setVerification] = useState('NOT_SUBMITTED');
+  const [orgMsg, setOrgMsg] = useState<Msg>(null);
+  const [savingOrg, setSavingOrg] = useState(false);
+  const [provider, setProvider] = useState('demo-bank');
+  const [accountRef, setAccountRef] = useState('');
+  const [isDefault, setIsDefault] = useState(true);
+  const [payoutMsg, setPayoutMsg] = useState<Msg>(null);
+  const [savingPayout, setSavingPayout] = useState(false);
 
-  // UI state
-  const [loading, setLoading] = useState(true);
-  const [notice, setNotice] = useState('');
-
-  const loadOrganizerProfile = useCallback(async () => {
+  const load = useCallback(async () => {
     try {
-      const organizer = await profileApi.getOrganizer();
-      setProfile(organizer);
-      setDisplayName(organizer.display_name);
-      setLegalName(organizer.legal_name ?? '');
-      setContactEmail(organizer.contact_email ?? user?.email ?? '');
-      setContactPhone(organizer.contact_phone ?? '');
-    } catch (e: unknown) {
-      const err = e as { status?: number; message?: string };
-      if (err.status !== 404) {
-        setNotice(err.message ?? 'Could not load organizer profile');
+      const me = await getMe();
+      setFirstName(me.firstName);
+      setLastName(me.lastName);
+      setEmail(me.email);
+      setVerified(me.verified);
+
+      const org = await getOrganizer();
+      setOrgExists(!!org);
+      if (org) {
+        setDisplayName(org.displayName);
+        setLegalName(org.legalName);
+        setContactEmail(org.contactEmail);
+        setContactPhone(org.contactPhone);
+        setVerification(org.verificationStatus);
       }
-    } finally {
-      setLoading(false);
+      setLoadFailed(false);
+    } catch {
+      setLoadFailed(true);
     }
-  }, [user?.email]);
+  }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      loadOrganizerProfile();
-    }, [loadOrganizerProfile])
-  );
+  useEffect(() => {
+    load().finally(() => setLoading(false));
+  }, [load]);
 
-  async function saveAccount() {
-    setNotice('');
+  async function onRefresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
+
+  async function submitAccount() {
+    setAccountMsg(null);
+    if (!firstName.trim() || !lastName.trim()) {
+      setAccountMsg({ kind: 'error', text: t.errFields });
+      return;
+    }
+    setSavingAccount(true);
     try {
-      await profileApi.updateUser({
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
-      });
-      setNotice('Account details saved.');
-    } catch (e: unknown) {
-      setNotice(e instanceof Error ? e.message : 'Could not save account');
+      await updateMe({ firstName: firstName.trim(), lastName: lastName.trim() });
+      setAccountMsg({ kind: 'info', text: tx.saved });
+    } catch (e) {
+      setAccountMsg({ kind: 'error', text: authErrorMessage(e, t) });
+    } finally {
+      setSavingAccount(false);
     }
   }
 
-  async function saveOrganizer() {
-    if (!profile && !termsAccepted) {
-      setNotice('Please accept the organizer terms before creating your profile.');
+  async function submitOrganizer() {
+    setOrgMsg(null);
+    if (!displayName.trim()) {
+      setOrgMsg({ kind: 'error', text: t.errFields });
       return;
     }
-
-    setNotice('');
+    setSavingOrg(true);
     try {
-      const payload = {
-        display_name: displayName.trim(),
-        legal_name: legalName.trim() || null,
-        contact_email: contactEmail.trim() || null,
-        contact_phone: contactPhone.trim() || null,
-      };
+      await saveOrganizer(orgExists, {
+        displayName: displayName.trim(),
+        legalName: legalName.trim(),
+        contactEmail: contactEmail.trim(),
+        contactPhone: contactPhone.trim(),
+      });
+      setOrgExists(true);
+      setOrgMsg({ kind: 'info', text: tx.saved });
+    } catch (e) {
+      setOrgMsg({ kind: 'error', text: authErrorMessage(e, t) });
+    } finally {
+      setSavingOrg(false);
+    }
+  }
 
-      const updatedProfile = profile
-        ? await profileApi.updateOrganizer(payload)
-        : await profileApi.createOrganizer({ ...payload, terms_accepted: true });
-
-      setProfile(updatedProfile);
-      setNotice('Organizer profile saved.');
-    } catch (e: unknown) {
-      setNotice(
-        e instanceof Error ? e.message : 'Could not save organizer profile'
-      );
+  async function submitPayout() {
+    setPayoutMsg(null);
+    if (!accountRef.trim()) {
+      setPayoutMsg({ kind: 'error', text: t.errFields });
+      return;
+    }
+    setSavingPayout(true);
+    try {
+      await savePayoutAccount({ provider, ref: accountRef.trim(), isDefault });
+      setAccountRef('');
+      setPayoutMsg({ kind: 'info', text: tx.saved });
+    } catch (e) {
+      setPayoutMsg({ kind: 'error', text: authErrorMessage(e, t) });
+    } finally {
+      setSavingPayout(false);
     }
   }
 
   if (loading) {
-    return <Busy />;
+    return (
+      <Screen title={tx.profileTitle}>
+        <ActivityIndicator size="large" color={colors.brand} style={{ marginTop: 40 }} />
+      </Screen>
+    );
   }
 
   return (
-    <Page title="Profile" subtitle="Account and organizer information">
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-        {notice ? <Notice>{notice}</Notice> : null}
+    <Screen title={tx.profileTitle} refreshing={refreshing} onRefresh={onRefresh}>
+      {loadFailed ? <Notice kind="error" text={tx.loadError} /> : null}
 
-        <Card>
-          <Text className="mb-3 text-lg font-bold">Account</Text>
-
-          <Field label="Email" value={user?.email ?? ''} editable={false} />
-          <Field label="First name" value={firstName} onChangeText={setFirstName} />
-          <Field label="Last name" value={lastName} onChangeText={setLastName} />
-
-          <Text className="mb-3 text-xs text-slate-500">
-            Email verification: {user?.emailVerifiedAt ? 'Verified' : 'Not verified'}
-          </Text>
-
-          <Action label="Save account" onPress={saveAccount} />
-        </Card>
-
-        <Card>
-          <Text className="mb-1 text-lg font-bold">Organizer profile</Text>
-          <Text className="mb-3 text-xs text-slate-500">
-            Status: {profile?.verification_status ?? 'Not created'}
-          </Text>
-
-          <Field
-            label="Display name"
-            value={displayName}
-            onChangeText={setDisplayName}
+      <Card
+        title={tx.account}
+        subtitle={tx.accountSub}
+        badge={
+          <Badge
+            text={verified ? `✓ ${tx.emailVerified}` : tx.emailNotVerified}
+            tone={verified ? 'green' : 'amber'}
           />
-          <Field
-            label="Legal name"
-            value={legalName}
-            onChangeText={setLegalName}
-          />
-          <Field
-            label="Contact email"
-            value={contactEmail}
-            onChangeText={setContactEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-          />
-          <Field
-            label="Contact phone"
-            value={contactPhone}
-            onChangeText={setContactPhone}
-            keyboardType="phone-pad"
-          />
+        }
+      >
+        <Field label={t.firstName} value={firstName} onChangeText={setFirstName} autoCapitalize="words" />
+        <Field label={t.lastName} value={lastName} onChangeText={setLastName} autoCapitalize="words" />
+        <Field label={t.email} value={email} editable={false} />
+        {accountMsg ? <Notice kind={accountMsg.kind} text={accountMsg.text} /> : null}
+        <PrimaryButton label={tx.save} onPress={submitAccount} loading={savingAccount} />
+      </Card>
 
-          {!profile ? (
-            <Pressable
-              onPress={() => setTermsAccepted((prev) => !prev)}
-              className="mb-3 rounded-lg bg-slate-100 p-3"
-            >
-              <Text className="text-sm text-slate-800">
-                {termsAccepted ? '☑' : '□'} I accept the organizer terms
-              </Text>
-            </Pressable>
-          ) : null}
-
-          <Action
-            label={
-              profile ? 'Save organizer profile' : 'Create organizer profile'
-            }
-            onPress={saveOrganizer}
+      <Card
+        title={tx.organizer}
+        subtitle={tx.organizerSub}
+        badge={
+          <Badge
+            text={`${tx.verification}: ${tx.verStatus[verification] ?? verification}`}
+            tone={statusTone(verification)}
           />
-        </Card>
-      </ScrollView>
-    </Page>
+        }
+      >
+        <Field label={tx.displayName} value={displayName} onChangeText={setDisplayName} />
+        <Field
+          label={`${tx.legalName} · ${tx.optional}`}
+          value={legalName}
+          onChangeText={setLegalName}
+        />
+        <Field
+          label={`${tx.contactEmail} · ${tx.optional}`}
+          value={contactEmail}
+          onChangeText={setContactEmail}
+          autoCapitalize="none"
+          keyboardType="email-address"
+        />
+        <Field
+          label={`${tx.contactPhone} · ${tx.optional}`}
+          placeholder="+7 7XX XXX XX XX"
+          value={contactPhone}
+          onChangeText={setContactPhone}
+          keyboardType="phone-pad"
+        />
+        {orgMsg ? <Notice kind={orgMsg.kind} text={orgMsg.text} /> : null}
+        <PrimaryButton label={tx.save} onPress={submitOrganizer} loading={savingOrg} />
+      </Card>
+
+      <Card title={tx.payout} subtitle={tx.payoutSub} badge={<Badge text={tx.demo} tone="gray" />}>
+        <Field label={tx.provider} value={provider} onChangeText={setProvider} autoCapitalize="none" />
+        <Field
+          label={tx.accountRef}
+          placeholder="KZ00 0000 0000 0000 0000"
+          value={accountRef}
+          onChangeText={setAccountRef}
+          autoCapitalize="characters"
+        />
+
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={() => setIsDefault((v) => !v)}
+          style={styles.checkRow}
+        >
+          <View style={[styles.box, isDefault && styles.boxOn]}>
+            {isDefault ? <Text style={styles.tick}>✓</Text> : null}
+          </View>
+          <Text style={styles.checkText}>{tx.useDefault}</Text>
+        </TouchableOpacity>
+
+        {!orgExists ? <Notice kind="info" text={tx.needOrganizer} /> : null}
+        {payoutMsg ? <Notice kind={payoutMsg.kind} text={payoutMsg.text} /> : null}
+        <PrimaryButton label={tx.saveAccount} onPress={submitPayout} loading={savingPayout} />
+      </Card>
+    </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  checkRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
+  box: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: '#d1d5db',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  boxOn: { backgroundColor: colors.brand, borderColor: colors.brand },
+  tick: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  checkText: { fontSize: 15, color: colors.text },
+});

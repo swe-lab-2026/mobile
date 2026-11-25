@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,7 +20,16 @@ import {
   reverseCheckInTicket,
   searchEventTickets,
 } from '../../../api/events';
+import { authStyles, Notice, PrimaryButton } from '../../../components/AuthUI';
+import { LanguagePicker } from '../../../components/LanguagePicker';
+import { Dict, Lang, useLanguage } from '../../../store/language-context';
 import { AttendanceStats, EventTicket } from '../../../types/event';
+
+const LOCALES: Record<Lang, string> = {
+  ru: 'ru-RU',
+  kk: 'kk-KZ',
+  en: 'en-GB',
+};
 
 function initials(name?: string | null) {
   return (
@@ -33,145 +42,144 @@ function initials(name?: string | null) {
   );
 }
 
-function formatCheckInTime(value?: string | null) {
+function maskName(name: string | null | undefined, fallback: string): string {
+  if (!name) return fallback;
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => `${part[0]}${'•'.repeat(Math.max(part.length - 1, 2))}`)
+    .join(' ');
+}
+
+function maskEmail(email?: string | null): string {
+  if (!email || !email.includes('@')) return '••••@••••.•••';
+  const [local, domain] = email.split('@');
+  const visible = local.slice(0, 2);
+  return `${visible}${'•'.repeat(Math.max(local.length - 2, 3))}@${domain}`;
+}
+
+function formatCheckInTime(value: string | null | undefined, locale: string) {
   if (!value) return null;
   const date = new Date(value);
   if (isNaN(date.getTime())) return null;
-  return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
 }
 
-function statusLabel(status: string) {
+function statusLabel(status: string, t: Dict) {
   switch (status) {
     case 'VALID':
-      return 'Not checked in';
+      return t.notCheckedIn;
     case 'CHECKED_IN':
-      return 'Checked in';
+      return t.checkedInStatus;
     case 'CANCELLED':
-      return 'Cancelled';
+      return t.cancelledStatus;
     case 'REFUNDED':
-      return 'Refunded';
+      return t.refundedStatus;
     default:
       return status;
   }
 }
 
-function actionErrorMessage(error: unknown): string {
+function actionErrorMessage(error: unknown, t: Dict): string {
   if (error instanceof ApiError) {
     switch (error.code) {
       case 'INSUFFICIENT_EVENT_PERMISSIONS':
-        return 'You do not have permission to perform this action for this event.';
+        return t.errInsufficientPermissions;
       case 'TICKET_NOT_CHECKED_IN':
-        return 'This ticket is not checked in anymore. Refresh the results.';
+        return t.errTicketNotCheckedIn;
       case 'TICKET_ALREADY_CHECKED_IN':
-        return 'This ticket has already been checked in.';
+        return t.errTicketAlreadyCheckedIn;
       case 'TICKET_NOT_VALID':
-        return 'This ticket is not valid for admission.';
+        return t.errTicketNotValid;
       case 'TICKET_NOT_FOUND':
-        return 'This ticket was not found for this event.';
+        return t.errTicketNotFound;
       case 'NETWORK_ERROR':
-        return 'Cannot reach the server. Check your connection.';
+        return t.errNetwork;
       default:
         return error.message;
     }
   }
-  return 'The action could not be completed. Please try again.';
+  return t.errActionGeneric;
 }
 
 export default function ParticipantsScreen() {
   const insets = useSafeAreaInsets();
+  const { t, lang } = useLanguage();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const eventId = Array.isArray(params.id) ? params.id[0] : params.id;
 
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<EventTicket[]>([]);
+  const [allTickets, setAllTickets] = useState<EventTicket[]>([]);
+  const [listRevealed, setListRevealed] = useState(false);
   const [stats, setStats] = useState<AttendanceStats | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [searched, setSearched] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [statsError, setStatsError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<EventTicket | null>(null);
   const [busy, setBusy] = useState(false);
   const requestId = useRef(0);
+  const locale = LOCALES[lang];
 
-  const loadStats = useCallback(async () => {
-    if (!eventId) return;
-    try {
-      setStats(await getEventAttendanceStats(eventId));
-      setStatsError(false);
-    } catch {
-      setStatsError(true);
-    }
-  }, [eventId]);
-
-  useEffect(() => {
-    let active = true;
-
-    if (!eventId) {
-      return () => {
-        active = false;
-      };
-    }
-
-    getEventAttendanceStats(eventId)
-      .then((data) => {
-        if (!active) return;
-        setStats(data);
-        setStatsError(false);
-      })
-      .catch(() => {
-        if (active) setStatsError(true);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [eventId]);
-
-  const runSearch = useCallback(
-    async (term: string) => {
-      if (!eventId) {
-        setSearchError('No event selected. Open this screen from an event.');
-        setSearched(true);
-        return;
-      }
-
-      const trimmed = term.trim();
+  const loadData = useCallback(
+    async (searchTerm = '') => {
+      if (!eventId) return;
       const id = requestId.current + 1;
       requestId.current = id;
 
-      if (!trimmed) {
-        setResults([]);
-        setSearched(false);
-        setSearchError(null);
-        return;
+      setLoading(true);
+      setLoadError(null);
+
+      const [statsResult, ticketsResult] = await Promise.allSettled([
+        getEventAttendanceStats(eventId),
+        searchEventTickets(eventId, searchTerm.trim()),
+      ]);
+
+      if (requestId.current !== id) return;
+
+      if (statsResult.status === 'fulfilled') {
+        setStats(statsResult.value);
+        setStatsError(false);
+      } else {
+        setStatsError(true);
       }
 
-      setSearching(true);
-      setSearchError(null);
-
-      try {
-        const rows = await searchEventTickets(eventId, trimmed);
-        if (requestId.current !== id) return;
-        setResults(rows);
-        setSearched(true);
-      } catch (error) {
-        if (requestId.current !== id) return;
-        setResults([]);
-        setSearched(true);
-        setSearchError(actionErrorMessage(error));
-      } finally {
-        if (requestId.current === id) {
-          setSearching(false);
-        }
+      if (ticketsResult.status === 'fulfilled') {
+        setAllTickets(ticketsResult.value);
+      } else {
+        setAllTickets([]);
+        setLoadError(actionErrorMessage(ticketsResult.reason, t));
       }
+
+      setLoading(false);
     },
-    [eventId],
+    [eventId, t],
   );
+
+  useEffect(() => {
+    void loadData('');
+  }, [loadData]);
+
+  const filteredTickets = useMemo(() => {
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) return allTickets;
+    return allTickets.filter((item) => {
+      const name = item.attendeeName?.toLowerCase() ?? '';
+      const email = item.attendeeEmail?.toLowerCase() ?? '';
+      const order = String(item.orderNumber ?? '');
+      const publicId = item.publicId?.toLowerCase() ?? '';
+      return (
+        name.includes(trimmed) ||
+        email.includes(trimmed) ||
+        order.includes(trimmed) ||
+        publicId.includes(trimmed)
+      );
+    });
+  }, [allTickets, query]);
 
   async function onRefresh() {
     setRefreshing(true);
-    await Promise.all([loadStats(), query.trim() ? runSearch(query) : Promise.resolve()]);
+    await loadData(query);
     setRefreshing(false);
   }
 
@@ -187,136 +195,150 @@ export default function ParticipantsScreen() {
       }
 
       setSelected(null);
-      await Promise.all([loadStats(), runSearch(query)]);
+      await loadData(query);
       Alert.alert(
-        'Success',
-        action === 'check-in'
-          ? 'The ticket was checked in by the server.'
-          : 'The check-in was reversed by the server.',
+        t.successTitle,
+        action === 'check-in' ? t.checkedInSuccess : t.reversedSuccess,
       );
     } catch (error) {
-      Alert.alert('Action failed', actionErrorMessage(error));
-      await Promise.all([loadStats(), query.trim() ? runSearch(query) : Promise.resolve()]);
+      Alert.alert(t.actionFailedTitle, actionErrorMessage(error, t));
+      await loadData(query);
     } finally {
       setBusy(false);
     }
   }
 
   function confirmReverse(ticket: EventTicket) {
-    Alert.alert(
-      'Reverse check-in?',
-      'Only the event owner or an Event Admin can reverse a check-in. The server will verify your permission.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reverse',
-          style: 'destructive',
-          onPress: () => void submitAction(ticket, 'reverse'),
-        },
-      ],
-    );
+    Alert.alert(t.reverseConfirmTitle, t.reverseConfirmBody, [
+      { text: t.cancelBtn, style: 'cancel' },
+      {
+        text: t.reverseConfirmAction,
+        style: 'destructive',
+        onPress: () => void submitAction(ticket, 'reverse'),
+      },
+    ]);
   }
+
+  const topBar = (
+    <View style={styles.topBar}>
+      <Pressable
+        onPress={() => router.back()}
+        style={({ pressed }) => [styles.backLink, pressed && styles.pressed]}>
+        <Text style={styles.backText}>‹ {t.back}</Text>
+      </Pressable>
+      <LanguagePicker />
+    </View>
+  );
 
   if (!eventId) {
     return (
-      <SafeAreaView style={styles.center}>
-        <Text style={styles.emptyTitle}>No event selected</Text>
-        <Text style={styles.empty}>Open this screen from an event to search its tickets.</Text>
-        <Pressable onPress={() => router.back()} style={styles.backPill}>
-          <Text style={styles.backText}>‹ Back</Text>
-        </Pressable>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        {topBar}
+        <View style={styles.emptyBox}>
+          <Text style={styles.emptyTitle}>{t.noEventSelected}</Text>
+          <Text style={styles.empty}>{t.errNoEventSelected}</Text>
+        </View>
       </SafeAreaView>
     );
   }
 
+  const totalCount = stats?.totalRegistered ?? allTickets.length;
+  const checkedInCount =
+    stats?.totalCheckedIn ?? allTickets.filter((item) => item.status === 'CHECKED_IN').length;
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <Pressable
-        onPress={() => router.back()}
-        style={({ pressed }) => [styles.backPill, pressed && styles.pressed]}>
-        <Text style={styles.backText}>‹ Back</Text>
-      </Pressable>
+      {topBar}
 
-      <View style={styles.header}>
-        <Text style={styles.subtitle}>
-          {stats
-            ? `${stats.totalCheckedIn} of ${stats.totalRegistered} checked in`
-            : statsError
-              ? 'Attendance statistics unavailable'
-              : 'Loading attendance statistics…'}
-        </Text>
-        <Text style={styles.title}>Participants</Text>
-      </View>
+      <Text style={authStyles.title}>{t.participantsTitle}</Text>
+      <Text style={authStyles.subtitle}>
+        {stats || allTickets.length > 0
+          ? `${checkedInCount} / ${totalCount} ${t.attendeesCheckedIn}`
+          : statsError
+            ? t.statsUnavailable
+            : t.loadingParticipants}
+      </Text>
 
-      <View style={styles.searchRow}>
-        <TextInput
-          style={styles.search}
-          placeholder="Search name, email, order, or ticket ID"
-          placeholderTextColor="#9ca3af"
-          value={query}
-          onChangeText={setQuery}
-          onSubmitEditing={() => void runSearch(query)}
-          returnKeyType="search"
-          autoCorrect={false}
-          autoCapitalize="none"
-          clearButtonMode="while-editing"
-          editable={!searching}
-        />
+      {/* Overall list summary + Show/Hide toggle */}
+      <View style={styles.visibilityBar}>
+        <View style={styles.visibilityInfo}>
+          <Text style={styles.visibilityTitle}>
+            {t.overallList} ({filteredTickets.length})
+          </Text>
+          <Text style={styles.visibilitySubtitle}>
+            {listRevealed ? t.detailsVisible : t.detailsHidden}
+          </Text>
+        </View>
         <Pressable
-          onPress={() => void runSearch(query)}
-          disabled={searching || !query.trim()}
-          style={({ pressed }) => [
-            styles.searchButton,
-            (pressed || searching || !query.trim()) && styles.pressed,
-          ]}>
-          {searching ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.searchButtonText}>Search</Text>
-          )}
+          onPress={() => setListRevealed((prev) => !prev)}
+          style={({ pressed }) => [styles.togglePill, pressed && styles.pressed]}>
+          <Text style={styles.togglePillText}>
+            {listRevealed ? t.hideList : t.showList}
+          </Text>
         </Pressable>
       </View>
 
-      <Text style={styles.searchHint}>
-        The backend only lists tickets that match a search term. Enter a name, email, order
-        number, or ticket ID.
-      </Text>
+      <View style={styles.searchSection}>
+        <View style={styles.searchRow}>
+          <TextInput
+            style={styles.input}
+            placeholder={t.searchParticipantPlaceholder}
+            placeholderTextColor="#9ca3af"
+            value={query}
+            onChangeText={(text) => {
+              setQuery(text);
+              if (text.trim()) setListRevealed(true);
+            }}
+            onSubmitEditing={() => void loadData(query)}
+            returnKeyType="search"
+            autoCorrect={false}
+            autoCapitalize="none"
+            clearButtonMode="while-editing"
+          />
+          <Pressable
+            onPress={() => void loadData(query)}
+            disabled={loading}
+            style={({ pressed }) => [
+              styles.searchButton,
+              loading && styles.searchButtonDisabled,
+              pressed && styles.pressed,
+            ]}>
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.searchButtonText}>{t.searchBtn}</Text>
+            )}
+          </Pressable>
+        </View>
+      </View>
+
+      {loadError ? <Notice kind="error" text={loadError} /> : null}
 
       <FlatList
-        data={results}
+        data={filteredTickets}
         keyExtractor={(item) => item.publicId}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#4f46e5" />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#111827" />
         }
         ListEmptyComponent={
           <View style={styles.emptyBox}>
-            {searching ? (
-              <ActivityIndicator color="#4f46e5" />
-            ) : searchError ? (
-              <>
-                <Text style={styles.emptyTitle}>Search failed</Text>
-                <Text style={styles.empty}>{searchError}</Text>
-                <Pressable
-                  onPress={() => void runSearch(query)}
-                  style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}>
-                  <Text style={styles.retryText}>Try again</Text>
-                </Pressable>
-              </>
-            ) : !searched ? (
-              <>
-                <Text style={styles.emptyTitle}>Search for a participant</Text>
-                <Text style={styles.empty}>
-                  Results appear only after a search because the backend does not expose an
-                  unrestricted attendee list to event staff.
-                </Text>
-              </>
+            {loading ? (
+              <ActivityIndicator color="#111827" />
+            ) : loadError ? (
+              <Pressable
+                onPress={() => void loadData(query)}
+                style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}>
+                <Text style={styles.retryText}>{t.retry}</Text>
+              </Pressable>
             ) : (
               <>
-                <Text style={styles.emptyTitle}>No tickets found</Text>
-                <Text style={styles.empty}>Try a different name, email, order, or ticket ID.</Text>
+                <Text style={styles.emptyTitle}>{t.noParticipantsTitle}</Text>
+                <Text style={styles.empty}>
+                  {query.trim() ? t.noParticipantsSearchHint : t.noParticipantsEmptyHint}
+                </Text>
               </>
             )}
           </View>
@@ -324,7 +346,14 @@ export default function ParticipantsScreen() {
         renderItem={({ item }) => {
           const isCheckedIn = item.status === 'CHECKED_IN';
           const canAct = item.status === 'VALID' || isCheckedIn;
-          const checkedInTime = formatCheckInTime(item.checkedInAt);
+          const checkedInTime = formatCheckInTime(item.checkedInAt, locale);
+
+          const displayName = listRevealed
+            ? item.attendeeName ?? t.unnamedAttendee
+            : maskName(item.attendeeName, t.hiddenAttendee);
+          const displayEmail = listRevealed
+            ? item.attendeeEmail
+            : maskEmail(item.attendeeEmail);
 
           return (
             <Pressable
@@ -333,20 +362,22 @@ export default function ParticipantsScreen() {
               disabled={!canAct}>
               <View style={[styles.avatar, isCheckedIn && styles.avatarDone]}>
                 <Text style={[styles.avatarText, isCheckedIn && styles.avatarTextDone]}>
-                  {initials(item.attendeeName ?? item.attendeeEmail)}
+                  {listRevealed
+                    ? initials(item.attendeeName ?? item.attendeeEmail)
+                    : '••'}
                 </Text>
               </View>
 
               <View style={styles.cardBody}>
                 <Text style={styles.rowTitle} numberOfLines={1}>
-                  {item.attendeeName ?? 'Unnamed attendee'}
+                  {displayName}
                 </Text>
                 <Text style={styles.rowSubtitle} numberOfLines={1}>
-                  {[item.ticketType, item.attendeeEmail].filter(Boolean).join(' · ')}
+                  {[item.ticketType, displayEmail].filter(Boolean).join(' · ')}
                 </Text>
                 <Text style={styles.rowMeta}>
-                  Order #{item.orderNumber}
-                  {checkedInTime ? ` · checked in at ${checkedInTime}` : ''}
+                  #{item.orderNumber}
+                  {checkedInTime ? ` · ${t.checkedInAt} ${checkedInTime}` : ''}
                 </Text>
               </View>
 
@@ -368,7 +399,7 @@ export default function ParticipantsScreen() {
                         ? styles.badgeTextPending
                         : styles.badgeTextInvalid,
                   ]}>
-                  {statusLabel(item.status)}
+                  {statusLabel(item.status, t)}
                 </Text>
               </View>
             </Pressable>
@@ -396,7 +427,11 @@ export default function ParticipantsScreen() {
             {selected ? (
               <>
                 <View style={styles.sheetHeader}>
-                  <View style={[styles.avatar, selected.status === 'CHECKED_IN' && styles.avatarDone]}>
+                  <View
+                    style={[
+                      styles.avatar,
+                      selected.status === 'CHECKED_IN' && styles.avatarDone,
+                    ]}>
                     <Text
                       style={[
                         styles.avatarText,
@@ -407,53 +442,43 @@ export default function ParticipantsScreen() {
                   </View>
                   <View style={styles.cardBody}>
                     <Text style={styles.sheetName}>
-                      {selected.attendeeName ?? 'Unnamed attendee'}
+                      {selected.attendeeName ?? t.unnamedAttendee}
                     </Text>
                     <Text style={styles.rowSubtitle}>{selected.attendeeEmail}</Text>
                     <Text style={styles.rowSubtitle}>
-                      {selected.ticketType} · Order #{selected.orderNumber}
+                      {selected.ticketType} · #{selected.orderNumber}
                     </Text>
                   </View>
                 </View>
 
                 <Text style={styles.sheetStatus}>
                   {selected.status === 'CHECKED_IN'
-                    ? `Checked in${
-                        formatCheckInTime(selected.checkedInAt)
-                          ? ` at ${formatCheckInTime(selected.checkedInAt)}`
+                    ? `${t.checkedInStatus}${
+                        formatCheckInTime(selected.checkedInAt, locale)
+                          ? ` (${formatCheckInTime(selected.checkedInAt, locale)})`
                           : ''
                       }`
-                    : statusLabel(selected.status)}
+                    : statusLabel(selected.status, t)}
                 </Text>
 
                 {selected.status === 'VALID' ? (
-                  <Pressable
-                    disabled={busy}
+                  <PrimaryButton
+                    label={t.checkInManually}
                     onPress={() => void submitAction(selected, 'check-in')}
-                    style={({ pressed }) => [
-                      styles.actionButton,
-                      styles.checkInButton,
-                      (pressed || busy) && styles.pressed,
-                    ]}>
-                    {busy ? (
-                      <ActivityIndicator color="#fff" />
-                    ) : (
-                      <Text style={styles.checkInText}>Check in manually</Text>
-                    )}
-                  </Pressable>
+                    loading={busy}
+                  />
                 ) : (
                   <Pressable
                     disabled={busy}
                     onPress={() => confirmReverse(selected)}
                     style={({ pressed }) => [
-                      styles.actionButton,
                       styles.undoButton,
                       (pressed || busy) && styles.pressed,
                     ]}>
                     {busy ? (
                       <ActivityIndicator color="#dc2626" />
                     ) : (
-                      <Text style={styles.undoText}>Reverse check-in</Text>
+                      <Text style={styles.undoText}>{t.reverseCheckIn}</Text>
                     )}
                   </Pressable>
                 )}
@@ -462,7 +487,7 @@ export default function ParticipantsScreen() {
                   disabled={busy}
                   onPress={() => setSelected(null)}
                   style={({ pressed }) => [styles.cancelButton, pressed && styles.pressed]}>
-                  <Text style={styles.cancelText}>Cancel</Text>
+                  <Text style={styles.cancelText}>{t.cancelBtn}</Text>
                 </Pressable>
               </>
             ) : null}
@@ -473,108 +498,155 @@ export default function ParticipantsScreen() {
   );
 }
 
-const shadow = {
-  shadowColor: '#000',
-  shadowOpacity: 0.06,
-  shadowRadius: 8,
-  shadowOffset: { width: 0, height: 2 },
-  elevation: 2,
-} as const;
-
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 20, paddingTop: 12, backgroundColor: '#f6f7fb' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: '#f6f7fb' },
+  container: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    backgroundColor: '#fff',
+  },
   pressed: { opacity: 0.7 },
 
-  backPill: {
-    alignSelf: 'flex-start',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    backgroundColor: '#eef2ff',
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 16,
   },
-  backText: { color: '#4f46e5', fontSize: 14, fontWeight: '600' },
+  backLink: { paddingVertical: 4 },
+  backText: {
+    color: '#111827',
+    fontSize: 15,
+    fontWeight: '600',
+  },
 
-  header: { marginBottom: 16 },
-  subtitle: { fontSize: 13, color: '#6b7280', marginBottom: 2 },
-  title: { fontSize: 26, fontWeight: '700', color: '#111827' },
+  visibilityBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fafafa',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+  },
+  visibilityInfo: {
+    flex: 1,
+    marginRight: 12,
+  },
+  visibilityTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  visibilitySubtitle: {
+    fontSize: 12,
+    color: '#6b7280',
+    marginTop: 2,
+  },
+  togglePill: {
+    backgroundColor: '#111827',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  togglePillText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
 
-  searchRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
-  search: {
+  searchSection: { marginBottom: 14 },
+  searchRow: { flexDirection: 'row', gap: 8 },
+  input: {
     flex: 1,
     backgroundColor: '#fff',
-    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 12,
     paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     fontSize: 15,
     color: '#111827',
-    ...shadow,
   },
   searchButton: {
-    backgroundColor: '#4f46e5',
-    borderRadius: 14,
+    backgroundColor: '#111827',
+    borderRadius: 12,
     paddingHorizontal: 18,
     justifyContent: 'center',
     alignItems: 'center',
-    minWidth: 82,
+    minWidth: 84,
   },
-  searchButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  searchHint: { color: '#6b7280', fontSize: 12, marginBottom: 16 },
+  searchButtonDisabled: { backgroundColor: '#9ca3af' },
+  searchButtonText: { color: '#fff', fontWeight: '600', fontSize: 15 },
 
   card: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 14,
     padding: 14,
-    marginBottom: 12,
-    ...shadow,
+    marginBottom: 10,
   },
   avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     backgroundColor: '#f3f4f6',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 14,
+    marginRight: 12,
   },
   avatarDone: { backgroundColor: '#dcfce7' },
-  avatarText: { fontSize: 15, fontWeight: '700', color: '#6b7280' },
+  avatarText: { fontSize: 14, fontWeight: '700', color: '#374151' },
   avatarTextDone: { color: '#16a34a' },
   cardBody: { flex: 1 },
-  rowTitle: { fontSize: 16, fontWeight: '600', color: '#111827' },
-  rowSubtitle: { fontSize: 13, color: '#6b7280', marginTop: 3 },
-  rowMeta: { fontSize: 12, color: '#9ca3af', marginTop: 3 },
+  rowTitle: { fontSize: 15, fontWeight: '600', color: '#111827' },
+  rowSubtitle: { fontSize: 13, color: '#6b7280', marginTop: 2 },
+  rowMeta: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
 
-  badge: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12, marginLeft: 8 },
+  badge: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 10, marginLeft: 8 },
   badgeDone: { backgroundColor: '#dcfce7' },
   badgePending: { backgroundColor: '#f3f4f6' },
   badgeInvalid: { backgroundColor: '#fee2e2' },
   badgeText: { fontSize: 12, fontWeight: '600' },
   badgeTextDone: { color: '#16a34a' },
-  badgeTextPending: { color: '#6b7280' },
+  badgeTextPending: { color: '#4b5563' },
   badgeTextInvalid: { color: '#dc2626' },
 
-  emptyBox: { alignItems: 'center', marginTop: 60, paddingHorizontal: 8 },
-  emptyTitle: { fontSize: 17, fontWeight: '600', color: '#111827', marginBottom: 6 },
+  emptyBox: {
+    alignItems: 'center',
+    marginTop: 32,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 14,
+    backgroundColor: '#fafafa',
+  },
+  emptyTitle: { fontSize: 16, fontWeight: '600', color: '#111827', marginBottom: 4 },
   empty: { textAlign: 'center', color: '#6b7280', fontSize: 14 },
   retryButton: {
-    marginTop: 16,
+    marginTop: 12,
     backgroundColor: '#111827',
     paddingHorizontal: 18,
     paddingVertical: 10,
     borderRadius: 12,
   },
-  retryText: { color: '#fff', fontWeight: '600' },
+  retryText: { color: '#fff', fontWeight: '600', fontSize: 14 },
 
-  backdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', justifyContent: 'flex-end' },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(17,24,39,0.45)',
+    justifyContent: 'flex-end',
+  },
   sheet: {
     backgroundColor: '#fff',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
     paddingTop: 12,
   },
   sheetHandle: {
@@ -585,20 +657,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#e5e7eb',
     marginBottom: 20,
   },
-  sheetHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
   sheetName: { fontSize: 18, fontWeight: '700', color: '#111827' },
   sheetStatus: { fontSize: 14, color: '#6b7280', marginBottom: 20 },
 
-  actionButton: {
-    borderRadius: 14,
-    paddingVertical: 16,
+  undoButton: {
+    borderRadius: 12,
+    paddingVertical: 14,
     alignItems: 'center',
-    marginBottom: 10,
+    backgroundColor: '#fee2e2',
+    marginBottom: 8,
   },
-  checkInButton: { backgroundColor: '#4f46e5' },
-  checkInText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  undoButton: { backgroundColor: '#fee2e2' },
-  undoText: { color: '#dc2626', fontSize: 16, fontWeight: '700' },
+  undoText: { color: '#dc2626', fontSize: 15, fontWeight: '600' },
   cancelButton: { paddingVertical: 14, alignItems: 'center' },
   cancelText: { color: '#6b7280', fontSize: 15, fontWeight: '600' },
 });
