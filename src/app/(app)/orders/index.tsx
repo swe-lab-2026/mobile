@@ -1,5 +1,5 @@
-import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { getOrders, OrderSummary } from '../../../api/account';
 import { Badge, Card, Screen, statusTone } from '../../../components/Screen';
@@ -13,33 +13,24 @@ export default function OrdersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (showLoader = false) => {
+    if (showLoader) setLoading(true);
     try {
       setOrders(await getOrders());
       setError(false);
     } catch {
       setError(true);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    getOrders()
-      .then((data) => {
-        if (!active) return;
-        setOrders(data);
-        setError(false);
-      })
-      .catch(() => {
-        if (active) setError(true);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+  // Reload whenever the screen regains focus, e.g. after buying a ticket.
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
 
   async function onRefresh() {
     setRefreshing(true);

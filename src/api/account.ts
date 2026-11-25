@@ -144,6 +144,38 @@ export function toOrderDetail(o: OrderDto): OrderDetail {
   };
 }
 
+export interface CreateOrderInput {
+  eventId: string;
+  items: { ticketTypeId: string; quantity: number }[];
+  promoCode?: string;
+}
+
+export interface CreatedOrder {
+  id: string;
+  status: string;
+  paymentUrl?: string;
+}
+
+// ASSUMPTION: POST /orders with this body. The repo only shows the read side
+// (GET /orders, /orders/{id}, /orders/{id}/tickets); adjust paths/fields here if
+// the backend contract differs.
+export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder> {
+  const body = await apiRequest<any>('/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      event_id: input.eventId,
+      items: input.items.map((i) => ({ ticket_type_id: i.ticketTypeId, quantity: i.quantity })),
+      promo_code: input.promoCode || undefined,
+    }),
+  });
+  const o = body?.data ?? body;
+  return {
+    id: String(o.id ?? o.order_id),
+    status: o.status ?? 'PENDING',
+    paymentUrl: o.payment_url ?? o.checkout_url ?? undefined,
+  };
+}
+
 export async function getOrders(): Promise<OrderSummary[]> {
   const rows = await apiRequest<OrderDto[]>('/orders?limit=200&offset=0');
   return rows

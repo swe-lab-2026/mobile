@@ -17,7 +17,7 @@ export interface PageProps {
 
 export function Page({ children, title, subtitle }: PageProps) {
   return (
-    <SafeAreaView className="flex-1 bg-slate-50" edges={['top']}>
+    <SafeAreaView className="flex-1 bg-slate-50" edges={['top', 'bottom']}>
       <View className="px-5 pt-5 pb-3">
         <Text className="text-2xl font-bold text-slate-900">{title}</Text>
         {subtitle ? (
