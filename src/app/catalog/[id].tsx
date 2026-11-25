@@ -1,5 +1,5 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -69,7 +69,10 @@ export default function CatalogEventDetailsScreen() {
   const [submitting, setSubmitting] = useState(false);
 
   const load = useCallback(async () => {
-    if (!eventId) return;
+    if (!eventId) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const events = await getCatalogEvents();
@@ -79,8 +82,6 @@ export default function CatalogEventDetailsScreen() {
     }
 
     try {
-      // This is the existing ticket-types endpoint used by the organizer app.
-      // The request is anonymous here because this is a public catalog page.
       const rows = await apiRequest<TicketType[]>(
         `/events/${encodeURIComponent(eventId)}/ticket-types`,
         { skipAuth: true },
@@ -96,7 +97,11 @@ export default function CatalogEventDetailsScreen() {
     }
   }, [eventId]);
 
-  useEffect(() => { load(); }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
 
   const total = useMemo(() => ticketTypes.reduce((sum, ticket) => {
     return sum + numericPrice(ticket) * (quantities[ticket.id] ?? 0);
