@@ -58,6 +58,64 @@ sending requests anywhere. Trailing
 slashes are normalized, and `/api/v1` is appended when the configured URL does
 not already include it.
 
+## Features
+
+**Accounts**
+
+- Sign up with a 6-digit email verification code (with resend), sign in, sign out.
+- Forgot password: request a reset email, then set a new password with the emailed token.
+- Profile: first / last name, organizer profile (display name, legal name, contact
+  email and phone, verification status) and a demo payout account.
+- Language picker (Russian, Kazakh, English), remembered between launches.
+
+**Attendees**
+
+- Public catalog of upcoming events with search and pull-to-refresh (no sign-in needed).
+- Event page: date and venue, description, ticket types with quantity selection and
+  total; signing in is required to register.
+- Order creation: free registrations are confirmed at once; for paid orders the payment
+  page is opened. Promo codes can be typed in, but validation is not connected yet.
+- My orders and order details with status, totals and one QR code per ticket.
+
+**Organizers** (owner of the event or Platform Admin)
+
+- My events: every event from `GET /events/assigned`, with a button to create an event.
+- Create and edit events: title, description, category, visibility, venue, city,
+  country, timezone, start / end, registration window, capacity, refund policy text,
+  images; times are entered in the event's timezone.
+- Ticket types with inventory: create, edit, hide / unhide (price in KZT, capacity,
+  per-order limits, sale window).
+- Event administrators: assign by account email, list and remove.
+- Publish checklist, publish / unpublish, duplicate and cancel an event.
+
+**Admission staff** (owner, `EVENT_ADMIN`, `CHECK_IN_STAFF`)
+
+- QR scanner with clear result messages, manual search and check-in, Undo
+  (reverse check-in) where allowed, live attendance stats. Details below.
+
+## Screens
+
+| Route | Screen |
+| --- | --- |
+| `/` | Public event catalog |
+| `/catalog/[id]` | Event details, ticket selection, order |
+| `/login`, `/register` | Sign in; sign up and email verification |
+| `/forgot-password`, `/reset-password` | Password reset |
+| `/events` | My events (assigned and owned) |
+| `/events/[id]` | Event details, attendance stats, organizer actions |
+| `/events/list_of_participants` | Attendee search, manual check-in and Undo |
+| `/scanner` | QR check-in |
+| `/create-event`, `/edit-event` | Event form |
+| `/tickets` | Ticket types of an event |
+| `/admins` | Event administrators |
+| `/orders`, `/orders/[id]` | My orders, order details with QR tickets |
+| `/profile` | Account, organizer profile, payout account |
+
+Routes in `src/app/(app)` require a signed-in user and redirect to `/login`
+otherwise. Source layout: `src/api` (REST calls), `src/store` (auth, language,
+selected event, texts), `src/features` (scan gate, attendance stats),
+`src/components` (shared UI).
+
 ## Authentication and sessions
 
 - Login calls `POST /api/v1/auth/login` and then `GET /api/v1/users/me`. The user
@@ -83,7 +141,10 @@ events returned by `GET /api/v1/events/assigned`. The mobile app does not treat
 `EVENT_ADMIN` as a global role. The backend remains the source of truth for all
 event and check-in permissions.
 
-## Features backed by the API
+## Admission (check-in) details
+
+API calls used:
+
 
 - Assigned event list and event details
 - Attendance statistics from `GET /api/v1/events/{event_id}/tickets/stats`
@@ -134,8 +195,8 @@ values stay visible with an explicit "could not refresh" notice.
 
 ## Localization
 
-Russian (default), Kazakh and English cover the admission workflow, auth screens
-and organizer management. The chosen language is persisted (SecureStore on
+Russian (default), Kazakh and English cover the catalog, orders, profile,
+admission workflow, auth screens and organizer management. The chosen language is persisted (SecureStore on
 native, `localStorage` on web) and restored on launch. Event dates and times are
 shown in the event's own timezone.
 
@@ -155,6 +216,14 @@ so `npm run typecheck` works from a clean checkout without the generated
 `expo-env.d.ts`. `npm run doctor` runs `expo-doctor` through `npx` (it is not a
 project dependency). `npm run check` runs typecheck, lint, tests and doctor. The same steps, plus a clean
 `npm ci` and both platform exports, run in `.github/workflows/mobile-checks.yml`.
+
+## Known gaps
+
+- Promo codes are not validated in the app yet (the backend supports
+  `POST /campaigns/validate`).
+- Paid checkout opens the payment page; there is no in-app payment screen.
+- Campaigns, analytics, refunds, support and the admin portal are available only in
+  the web app.
 
 ## Learn more
 
